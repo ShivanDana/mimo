@@ -300,7 +300,7 @@ HOOK_EOF
 cat > "$HOOKS_DIR/session-start.sh" << 'HOOK_EOF'
 #!/usr/bin/env bash
 # mimo v__VERSION__ — SessionStart hook (startup/resume)
-# Resets state for new session, injects memory context into Claude
+# Resets state for new session, auto-inits project, injects memory context into Claude
 set -euo pipefail
 
 STATE_DIR="$HOME/.claude/memory-state"
@@ -319,8 +319,196 @@ jq -n --arg sid "$SESSION_ID" \
     '{session_id: $sid, percentage: 0, threshold: "clean", checkpoint_done: false, fullsave_done: false}' \
     > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
 
-# Build context message
+# ─── Auto-init: create CLAUDE.md and CLAUDE-FULL.md if missing ───────────────
+WORKFLOW_MARKER="## Workflow Orchestration"
+MEMORY_MARKER="Memory — Current State"
+AUTO_INIT_MSG=""
+
+if [ ! -f "$CWD/CLAUDE.md" ]; then
+    # Create fresh: workflow block at top, memory sections at bottom
+    cat > "$CWD/CLAUDE.md" << 'MIMO_CLAUDE_MD'
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Workflow Orchestration
+
+### 1. Plan Mode Default
+- Enter plan mode for ANY non-trivial task (3+ steps or architectural decisions)
+- If something goes sideways, STOP and re-plan immediately – don't keep pushing
+- Use plan mode for verification steps, not just building
+- Write detailed specs upfront to reduce ambiguity
+
+### 2. Subagent Strategy
+- Use subagents liberally to keep main context window clean
+- Offload research, exploration, and parallel analysis to subagents
+- For complex problems, throw more compute at it via subagents
+- One task per subagent for focused execution
+
+### 3. Self-Improvement Loop
+- After ANY correction from the user: update `tasks/lessons.md` with the pattern
+- Write rules for yourself that prevent the same mistake
+- Ruthlessly iterate on these lessons until mistake rate drops
+- Review lessons at session start for relevant project
+
+### 4. Verification Before Done
+- Never mark a task complete without proving it works
+- Diff behavior between main and your changes when relevant
+- Ask yourself: "Would a staff engineer approve this?"
+- Run tests, check logs, demonstrate correctness
+
+### 5. Demand Elegance (Balanced)
+- For non-trivial changes: pause and ask "is there a more elegant way?"
+- If a fix feels hacky: "Knowing everything I know now, implement the elegant solution"
+- Skip this for simple, obvious fixes – don't over-engineer
+- Challenge your own work before presenting it
+
+### 6. Autonomous Bug Fixing
+- When given a bug report: just fix it. Don't ask for hand-holding
+- Point at logs, errors, failing tests – then resolve them
+- Zero context switching required from the user
+- Go fix failing CI tests without being told how
+
+## Task Management
+
+1. **Plan First**: Write plan to `tasks/todo.md` with checkable items
+2. **Verify Plan**: Check in before starting implementation
+3. **Track Progress**: Mark items complete as you go
+4. **Explain Changes**: High-level summary at each step
+5. **Document Results**: Add review section to `tasks/todo.md`
+6. **Capture Lessons**: Update `tasks/lessons.md` after corrections
+
+## Core Principles
+
+- **Simplicity First**: Make every change as simple as possible. Impact minimal code.
+- **No Laziness**: Find root causes. No temporary fixes. Senior developer standards.
+- **Minimal Impact**: Changes should only touch what's necessary. Avoid introducing bugs.
+
+## Memory — Current State
+<!-- Updated by mimo checkpoint/save hooks -->
+Last session: (not yet set)
+Current focus: (not yet set)
+Blockers: None
+
+## Memory — Recent Sessions
+<!-- Rolling list, max 7 entries. Oldest dropped. -->
+<!-- Each entry has a line reference to CLAUDE-FULL.md -->
+
+## Memory — Key Decisions
+<!-- One-liner + CLAUDE-FULL.md line ref for reasoning -->
+MIMO_CLAUDE_MD
+    AUTO_INIT_MSG="Auto-initialized CLAUDE.md for this project."
+
+elif ! grep -q "$MEMORY_MARKER" "$CWD/CLAUDE.md" 2>/dev/null; then
+    # Existing CLAUDE.md but no memory sections — prepend workflow (if missing), append memory
+    if ! grep -q "$WORKFLOW_MARKER" "$CWD/CLAUDE.md" 2>/dev/null; then
+        TMPFILE=$(mktemp)
+        cat > "$TMPFILE" << 'WORKFLOW_BLOCK'
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Workflow Orchestration
+
+### 1. Plan Mode Default
+- Enter plan mode for ANY non-trivial task (3+ steps or architectural decisions)
+- If something goes sideways, STOP and re-plan immediately – don't keep pushing
+- Use plan mode for verification steps, not just building
+- Write detailed specs upfront to reduce ambiguity
+
+### 2. Subagent Strategy
+- Use subagents liberally to keep main context window clean
+- Offload research, exploration, and parallel analysis to subagents
+- For complex problems, throw more compute at it via subagents
+- One task per subagent for focused execution
+
+### 3. Self-Improvement Loop
+- After ANY correction from the user: update `tasks/lessons.md` with the pattern
+- Write rules for yourself that prevent the same mistake
+- Ruthlessly iterate on these lessons until mistake rate drops
+- Review lessons at session start for relevant project
+
+### 4. Verification Before Done
+- Never mark a task complete without proving it works
+- Diff behavior between main and your changes when relevant
+- Ask yourself: "Would a staff engineer approve this?"
+- Run tests, check logs, demonstrate correctness
+
+### 5. Demand Elegance (Balanced)
+- For non-trivial changes: pause and ask "is there a more elegant way?"
+- If a fix feels hacky: "Knowing everything I know now, implement the elegant solution"
+- Skip this for simple, obvious fixes – don't over-engineer
+- Challenge your own work before presenting it
+
+### 6. Autonomous Bug Fixing
+- When given a bug report: just fix it. Don't ask for hand-holding
+- Point at logs, errors, failing tests – then resolve them
+- Zero context switching required from the user
+- Go fix failing CI tests without being told how
+
+## Task Management
+
+1. **Plan First**: Write plan to `tasks/todo.md` with checkable items
+2. **Verify Plan**: Check in before starting implementation
+3. **Track Progress**: Mark items complete as you go
+4. **Explain Changes**: High-level summary at each step
+5. **Document Results**: Add review section to `tasks/todo.md`
+6. **Capture Lessons**: Update `tasks/lessons.md` after corrections
+
+## Core Principles
+
+- **Simplicity First**: Make every change as simple as possible. Impact minimal code.
+- **No Laziness**: Find root causes. No temporary fixes. Senior developer standards.
+- **Minimal Impact**: Changes should only touch what's necessary. Avoid introducing bugs.
+
+WORKFLOW_BLOCK
+        cat "$CWD/CLAUDE.md" >> "$TMPFILE"
+        mv "$TMPFILE" "$CWD/CLAUDE.md"
+    fi
+
+    # Append memory sections at bottom
+    cat >> "$CWD/CLAUDE.md" << 'MEMORY_SECTIONS'
+
+## Memory — Current State
+<!-- Updated by mimo checkpoint/save hooks -->
+Last session: (not yet set)
+Current focus: (not yet set)
+Blockers: None
+
+## Memory — Recent Sessions
+<!-- Rolling list, max 7 entries. Oldest dropped. -->
+<!-- Each entry has a line reference to CLAUDE-FULL.md -->
+
+## Memory — Key Decisions
+<!-- One-liner + CLAUDE-FULL.md line ref for reasoning -->
+MEMORY_SECTIONS
+    AUTO_INIT_MSG="Auto-initialized memory sections in existing CLAUDE.md."
+fi
+
+# CLAUDE-FULL.md
+if [ ! -f "$CWD/CLAUDE-FULL.md" ]; then
+    cat > "$CWD/CLAUDE-FULL.md" << 'ARCHIVE'
+# Deep Memory Archive
+
+<!-- This file stores detailed session logs for long-term context preservation. -->
+<!-- CLAUDE.md references specific line ranges here (e.g., [CLAUDE-FULL.md L7-L14]). -->
+<!-- Append new sessions at the end. Do not delete old entries. -->
+
+## Sessions
+ARCHIVE
+    if [ -z "$AUTO_INIT_MSG" ]; then
+        AUTO_INIT_MSG="Auto-initialized CLAUDE-FULL.md for this project."
+    else
+        AUTO_INIT_MSG="${AUTO_INIT_MSG} Created CLAUDE-FULL.md."
+    fi
+fi
+
+# ─── Build context message ───────────────────────────────────────────────────
 MSG="[MIMO ACTIVE] Memory hooks enabled. Checkpoints at 50% context, full save at 80%."
+
+if [ -n "$AUTO_INIT_MSG" ]; then
+    MSG="${MSG}\n${AUTO_INIT_MSG}"
+fi
 
 # Check for deep memory archive
 if [ -f "$CWD/CLAUDE-FULL.md" ]; then
@@ -597,33 +785,70 @@ cmd_init() {
     printf "${BOLD}mimo init${NC} — setting up memory for this project\n"
     echo ""
 
+    WORKFLOW_MARKER="## Workflow Orchestration"
+    MEMORY_MARKER="Memory — Current State"
+
     # CLAUDE.md
-    if [ -f "CLAUDE.md" ]; then
-        if grep -q 'Memory — Current State' CLAUDE.md 2>/dev/null; then
-            ok "CLAUDE.md already has memory sections (skipping)"
-        else
-            echo "" >> CLAUDE.md
-            cat >> CLAUDE.md << 'SECTIONS'
-
-## Memory — Current State
-<!-- Updated by mimo checkpoint/save hooks -->
-Last session: (not yet set)
-Current focus: (not yet set)
-Blockers: None
-
-## Memory — Recent Sessions
-<!-- Rolling list, max 7 entries. Oldest dropped. -->
-<!-- Each entry has a line reference to CLAUDE-FULL.md -->
-
-## Memory — Key Decisions
-<!-- One-liner + CLAUDE-FULL.md line ref for reasoning -->
-SECTIONS
-            ok "Added memory sections to CLAUDE.md"
-        fi
-    else
-        cat > CLAUDE.md << 'NEWFILE'
+    if [ ! -f "CLAUDE.md" ]; then
+        # Create fresh: workflow block at top, memory sections at bottom
+        cat > CLAUDE.md << 'MIMO_CLAUDE_MD'
 # CLAUDE.md
 
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Workflow Orchestration
+
+### 1. Plan Mode Default
+- Enter plan mode for ANY non-trivial task (3+ steps or architectural decisions)
+- If something goes sideways, STOP and re-plan immediately – don't keep pushing
+- Use plan mode for verification steps, not just building
+- Write detailed specs upfront to reduce ambiguity
+
+### 2. Subagent Strategy
+- Use subagents liberally to keep main context window clean
+- Offload research, exploration, and parallel analysis to subagents
+- For complex problems, throw more compute at it via subagents
+- One task per subagent for focused execution
+
+### 3. Self-Improvement Loop
+- After ANY correction from the user: update `tasks/lessons.md` with the pattern
+- Write rules for yourself that prevent the same mistake
+- Ruthlessly iterate on these lessons until mistake rate drops
+- Review lessons at session start for relevant project
+
+### 4. Verification Before Done
+- Never mark a task complete without proving it works
+- Diff behavior between main and your changes when relevant
+- Ask yourself: "Would a staff engineer approve this?"
+- Run tests, check logs, demonstrate correctness
+
+### 5. Demand Elegance (Balanced)
+- For non-trivial changes: pause and ask "is there a more elegant way?"
+- If a fix feels hacky: "Knowing everything I know now, implement the elegant solution"
+- Skip this for simple, obvious fixes – don't over-engineer
+- Challenge your own work before presenting it
+
+### 6. Autonomous Bug Fixing
+- When given a bug report: just fix it. Don't ask for hand-holding
+- Point at logs, errors, failing tests – then resolve them
+- Zero context switching required from the user
+- Go fix failing CI tests without being told how
+
+## Task Management
+
+1. **Plan First**: Write plan to `tasks/todo.md` with checkable items
+2. **Verify Plan**: Check in before starting implementation
+3. **Track Progress**: Mark items complete as you go
+4. **Explain Changes**: High-level summary at each step
+5. **Document Results**: Add review section to `tasks/todo.md`
+6. **Capture Lessons**: Update `tasks/lessons.md` after corrections
+
+## Core Principles
+
+- **Simplicity First**: Make every change as simple as possible. Impact minimal code.
+- **No Laziness**: Find root causes. No temporary fixes. Senior developer standards.
+- **Minimal Impact**: Changes should only touch what's necessary. Avoid introducing bugs.
+
 ## Memory — Current State
 <!-- Updated by mimo checkpoint/save hooks -->
 Last session: (not yet set)
@@ -636,8 +861,97 @@ Blockers: None
 
 ## Memory — Key Decisions
 <!-- One-liner + CLAUDE-FULL.md line ref for reasoning -->
-NEWFILE
-        ok "Created CLAUDE.md with memory sections"
+MIMO_CLAUDE_MD
+        ok "Created CLAUDE.md with workflow guidance and memory sections"
+
+    elif grep -q "$MEMORY_MARKER" CLAUDE.md 2>/dev/null; then
+        ok "CLAUDE.md already has memory sections (skipping)"
+
+    else
+        # Existing CLAUDE.md without memory sections
+        if ! grep -q "$WORKFLOW_MARKER" CLAUDE.md 2>/dev/null; then
+            TMPFILE=$(mktemp)
+            cat > "$TMPFILE" << 'WORKFLOW_BLOCK'
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Workflow Orchestration
+
+### 1. Plan Mode Default
+- Enter plan mode for ANY non-trivial task (3+ steps or architectural decisions)
+- If something goes sideways, STOP and re-plan immediately – don't keep pushing
+- Use plan mode for verification steps, not just building
+- Write detailed specs upfront to reduce ambiguity
+
+### 2. Subagent Strategy
+- Use subagents liberally to keep main context window clean
+- Offload research, exploration, and parallel analysis to subagents
+- For complex problems, throw more compute at it via subagents
+- One task per subagent for focused execution
+
+### 3. Self-Improvement Loop
+- After ANY correction from the user: update `tasks/lessons.md` with the pattern
+- Write rules for yourself that prevent the same mistake
+- Ruthlessly iterate on these lessons until mistake rate drops
+- Review lessons at session start for relevant project
+
+### 4. Verification Before Done
+- Never mark a task complete without proving it works
+- Diff behavior between main and your changes when relevant
+- Ask yourself: "Would a staff engineer approve this?"
+- Run tests, check logs, demonstrate correctness
+
+### 5. Demand Elegance (Balanced)
+- For non-trivial changes: pause and ask "is there a more elegant way?"
+- If a fix feels hacky: "Knowing everything I know now, implement the elegant solution"
+- Skip this for simple, obvious fixes – don't over-engineer
+- Challenge your own work before presenting it
+
+### 6. Autonomous Bug Fixing
+- When given a bug report: just fix it. Don't ask for hand-holding
+- Point at logs, errors, failing tests – then resolve them
+- Zero context switching required from the user
+- Go fix failing CI tests without being told how
+
+## Task Management
+
+1. **Plan First**: Write plan to `tasks/todo.md` with checkable items
+2. **Verify Plan**: Check in before starting implementation
+3. **Track Progress**: Mark items complete as you go
+4. **Explain Changes**: High-level summary at each step
+5. **Document Results**: Add review section to `tasks/todo.md`
+6. **Capture Lessons**: Update `tasks/lessons.md` after corrections
+
+## Core Principles
+
+- **Simplicity First**: Make every change as simple as possible. Impact minimal code.
+- **No Laziness**: Find root causes. No temporary fixes. Senior developer standards.
+- **Minimal Impact**: Changes should only touch what's necessary. Avoid introducing bugs.
+
+WORKFLOW_BLOCK
+            cat CLAUDE.md >> "$TMPFILE"
+            mv "$TMPFILE" CLAUDE.md
+            ok "Prepended workflow guidance to CLAUDE.md"
+        fi
+
+        # Append memory sections at bottom
+        cat >> CLAUDE.md << 'MEMORY_SECTIONS'
+
+## Memory — Current State
+<!-- Updated by mimo checkpoint/save hooks -->
+Last session: (not yet set)
+Current focus: (not yet set)
+Blockers: None
+
+## Memory — Recent Sessions
+<!-- Rolling list, max 7 entries. Oldest dropped. -->
+<!-- Each entry has a line reference to CLAUDE-FULL.md -->
+
+## Memory — Key Decisions
+<!-- One-liner + CLAUDE-FULL.md line ref for reasoning -->
+MEMORY_SECTIONS
+        ok "Added memory sections to CLAUDE.md"
     fi
 
     # CLAUDE-FULL.md
@@ -678,7 +992,7 @@ mimo v${MIMO_VERSION} — hook-based memory system for Claude Code
 Usage: mimo <command>
 
 Commands:
-  init        Set up memory sections in the current project
+  init        Re-initialize memory files in the current project
   status      Show diagnostic information
   version     Print version
   uninstall   Remove mimo from your system
@@ -686,8 +1000,8 @@ Commands:
 
 Getting started:
   1. mimo is already installed (hooks + settings configured)
-  2. Run 'mimo init' in your project directory
-  3. Start a Claude Code session — mimo handles the rest
+  2. Start a Claude Code session — mimo auto-initializes your project
+  3. Use 'mimo init' to manually reset memory files if needed
 
 Learn more: https://github.com/ShivanDana/mimo
 HELP
@@ -810,11 +1124,10 @@ printf "${BOLD}${GREEN}mimo v${MIMO_VERSION} installed successfully!${NC}\n"
 echo ""
 echo "Next steps:"
 echo "  1. cd into your project directory"
-echo "  2. Run: mimo init"
-echo "  3. Start a Claude Code session — mimo handles the rest"
+echo "  2. Start a Claude Code session — mimo auto-initializes your project"
 echo ""
 echo "Commands:"
 echo "  mimo status     — check installation health"
-echo "  mimo init       — set up memory in current project"
+echo "  mimo init       — re-initialize memory files in current project"
 echo "  mimo uninstall  — remove mimo"
 echo ""

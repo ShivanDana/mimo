@@ -2,6 +2,18 @@
 
 All notable changes to mimo will be documented in this file.
 
+## [1.1.0] - 2026-02-25
+
+### Changed
+- **One-command install**: `session-start.sh` now auto-initializes `CLAUDE.md` and `CLAUDE-FULL.md` on first session start — no need to run `mimo init` separately
+- Auto-generated `CLAUDE.md` includes workflow guidance (plan mode, subagents, verification, etc.) at the top and memory sections at the bottom
+- Existing `CLAUDE.md` files are preserved: workflow block prepended at top, memory sections appended at bottom (idempotent)
+- `mimo init` is now an optional re-initialization/reset command
+- Updated install completion message and CLI help text
+
+### Added
+- `templates/claude-md-workflow.md` — reference template for the workflow guidance block
+
 ## [1.0.0] - 2026-02-24
 
 ### Added

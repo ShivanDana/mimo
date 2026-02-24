@@ -22,14 +22,7 @@ curl -fsSL https://raw.githubusercontent.com/ShivanDana/mimo/main/install.sh | b
 
 **Requirements:** `jq`, `bash` 3.2+, [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed
 
-Then initialize memory in your project:
-
-```bash
-cd your-project
-mimo init
-```
-
-That's it. Start a Claude Code session and mimo handles the rest.
+That's it. Start a Claude Code session in any project directory and mimo auto-initializes `CLAUDE.md` and `CLAUDE-FULL.md` for you. No extra steps needed.
 
 ## How it works
 
@@ -38,11 +31,19 @@ mimo installs 6 hooks into Claude Code's hook system:
 | Hook | Event | What it does |
 |------|-------|-------------|
 | `statusline-memory.sh` | StatusLine | Shows context %, colored progress bar, threshold indicators |
-| `session-start.sh` | SessionStart (startup/resume) | Resets state, injects memory context |
+| `session-start.sh` | SessionStart (startup/resume) | Resets state, auto-inits project, injects memory context |
 | `session-start-compact.sh` | SessionStart (compact) | Lightweight context reminder after compaction |
 | `memory-gate.sh` | Stop | Blocks Claude from stopping until memory is saved |
 | `precompact-save.sh` | PreCompact | Backs up transcript before compaction |
 | `session-end-backup.sh` | SessionEnd | Final transcript backup |
+
+### Auto-initialization
+
+On the first session start in any project directory, mimo automatically creates:
+- `CLAUDE.md` with workflow guidance at the top and memory sections at the bottom
+- `CLAUDE-FULL.md` as an empty deep archive
+
+If a `CLAUDE.md` already exists, mimo preserves your content and only adds the missing pieces (workflow block prepended at top, memory sections appended at bottom). Idempotent — running twice produces the same result.
 
 ### Memory architecture
 
@@ -76,8 +77,8 @@ The stop hook (`memory-gate.sh`) blocks Claude from ending a turn until the save
 ## CLI
 
 ```bash
-mimo init        # Add memory sections to current project's CLAUDE.md
 mimo status      # Diagnostic: hooks, settings, dependencies, session state
+mimo init        # Re-initialize memory files in current project (optional — auto-init on session start)
 mimo version     # Print version
 mimo uninstall   # Remove mimo (preserves your memory data)
 ```

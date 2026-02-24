@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # mimo installer — hook-based memory system for Claude Code
-# Usage: curl -fsSL https://raw.githubusercontent.com/OWNER/mimo/main/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/ShivanDana/mimo/main/install.sh | bash
 set -euo pipefail
 
 MIMO_VERSION="1.0.0"
@@ -666,7 +666,7 @@ cmd_uninstall() {
         exec bash "$HOME/.local/bin/mimo-uninstall"
     else
         printf "${RED}[mimo]${NC} mimo-uninstall not found. Run manually:\n" >&2
-        echo "  curl -fsSL https://raw.githubusercontent.com/OWNER/mimo/main/uninstall.sh | bash"
+        echo "  curl -fsSL https://raw.githubusercontent.com/ShivanDana/mimo/main/uninstall.sh | bash"
         exit 1
     fi
 }
@@ -689,7 +689,7 @@ Getting started:
   2. Run 'mimo init' in your project directory
   3. Start a Claude Code session — mimo handles the rest
 
-Learn more: https://github.com/OWNER/mimo
+Learn more: https://github.com/ShivanDana/mimo
 HELP
 }
 

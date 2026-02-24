@@ -17,7 +17,7 @@ When you start a new session, Claude reads the memory sections in `CLAUDE.md` an
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/OWNER/mimo/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ShivanDana/mimo/main/install.sh | bash
 ```
 
 **Requirements:** `jq`, `bash` 3.2+, [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed
@@ -91,7 +91,7 @@ mimo uninstall
 Or standalone:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/OWNER/mimo/main/uninstall.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ShivanDana/mimo/main/uninstall.sh | bash
 ```
 
 This removes hooks and settings entries but **preserves your data**:

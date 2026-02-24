@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # mimo uninstaller — standalone script for removing mimo
-# Usage: curl -fsSL https://raw.githubusercontent.com/OWNER/mimo/main/uninstall.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/ShivanDana/mimo/main/uninstall.sh | bash
 #    or: mimo uninstall
 set -euo pipefail
 

@@ -36,6 +36,14 @@ else
     info "Removed $REMOVED hook scripts"
 fi
 
+# ─── 1b. Remove skill files ────────────────────────────────────────────────
+for skill in save save-full; do
+    if [ -d "$HOME/.claude/skills/$skill" ]; then
+        rm -rf "$HOME/.claude/skills/$skill"
+        info "Removed skill: /$skill"
+    fi
+done
+
 # ─── 2. Remove mimo entries from settings.json ───────────────────────────────
 if [ -f "$SETTINGS_FILE" ]; then
     if ! command -v jq &>/dev/null; then

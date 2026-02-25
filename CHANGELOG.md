@@ -2,6 +2,14 @@
 
 All notable changes to mimo will be documented in this file.
 
+## [1.2.0] - 2026-02-25
+
+### Added
+- **Manual save commands**: `/save` (checkpoint) and `/save-full` (comprehensive save) as Claude Code slash commands
+- Skills installed to `~/.claude/skills/save/` and `~/.claude/skills/save-full/`
+- `mimo status` now checks skill installation
+- `mimo help` now lists available slash commands
+
 ## [1.1.0] - 2026-02-25
 
 ### Changed

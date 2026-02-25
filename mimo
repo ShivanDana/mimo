@@ -66,6 +66,16 @@ cmd_status() {
     ok "bash ${BASH_VERSION}"
 
     echo ""
+    printf "${BOLD}Skills:${NC}\n"
+    for skill in save save-full; do
+        if [ -f "$HOME/.claude/skills/$skill/SKILL.md" ]; then
+            ok "/$skill"
+        else
+            fail "/$skill (not installed)"
+        fi
+    done
+
+    echo ""
     printf "${BOLD}Session state:${NC}\n"
     if [ -f "$STATE_FILE" ]; then
         PCT=$(jq -r '.percentage // 0' "$STATE_FILE" 2>/dev/null || echo "0")
@@ -313,6 +323,11 @@ Commands:
   version     Print version
   uninstall   Remove mimo from your system
   help        Show this help
+
+Slash commands (inside Claude Code):
+  /save       Save a quick checkpoint (same as auto-checkpoint at 50%)
+  /save-full  Full memory save (same as auto-save at 80%)
+  /pcompact   Generate context-preserving /compact instructions
 
 Getting started:
   1. mimo is already installed (hooks + settings configured)

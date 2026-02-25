@@ -8,6 +8,7 @@ HOOKS_DIR="$HOME/.claude/hooks"
 STATE_DIR="$HOME/.claude/memory-state"
 BACKUP_DIR="$HOME/.claude/backups"
 SETTINGS_FILE="$HOME/.claude/settings.json"
+SKILLS_DIR="$HOME/.claude/skills"
 CLI_DIR="$HOME/.local/bin"
 
 # ─── Colors ───────────────────────────────────────────────────────────────────
@@ -20,7 +21,7 @@ NC='\033[0m'
 info()  { printf "${GREEN}[mimo]${NC} %s\n" "$1"; }
 warn()  { printf "${YELLOW}[mimo]${NC} %s\n" "$1"; }
 error() { printf "${RED}[mimo]${NC} %s\n" "$1" >&2; }
-step()  { printf "${BOLD}[%s/5]${NC} %s\n" "$1" "$2"; }
+step()  { printf "${BOLD}[%s/6]${NC} %s\n" "$1" "$2"; }
 
 # ─── Step 1: Preflight checks ────────────────────────────────────────────────
 step 1 "Preflight checks"
@@ -581,8 +582,67 @@ chmod +x "$HOOKS_DIR"/*.sh
 
 info "Installed 6 hooks to $HOOKS_DIR"
 
-# ─── Step 3: Merge settings.json ─────────────────────────────────────────────
-step 3 "Configuring settings.json"
+# ─── Step 3: Install skills (slash commands) ────────────────────────────────
+step 3 "Installing skills (slash commands)"
+
+mkdir -p "$SKILLS_DIR/save" "$SKILLS_DIR/save-full"
+
+cat > "$SKILLS_DIR/save/SKILL.md" << 'SKILL_EOF'
+---
+name: save
+description: "Save a mimo checkpoint — snapshot current work to CLAUDE.md and CLAUDE-FULL.md"
+---
+
+[MIMO — MANUAL CHECKPOINT]
+
+Save a checkpoint of your current work to preserve context:
+
+1. Read CLAUDE.md and CLAUDE-FULL.md in the project root
+2. Update CLAUDE.md "Memory — Current State" section:
+   - Today's date
+   - What you're currently working on
+   - Any blockers or key context to preserve
+3. Update "Memory — Recent Sessions" — add/update this session entry (max 7)
+4. Append a brief session log to CLAUDE-FULL.md:
+   - Session number, date, work summary
+   - Key files changed
+   - State at checkpoint
+5. Update line references [L##-L##] in CLAUDE.md
+
+After saving, say "checkpoint saved" and continue working normally.
+SKILL_EOF
+
+cat > "$SKILLS_DIR/save-full/SKILL.md" << 'SKILL_EOF'
+---
+name: save-full
+description: "Perform a full mimo memory save — comprehensive session log to CLAUDE.md and CLAUDE-FULL.md"
+---
+
+[MIMO — MANUAL FULL SAVE]
+
+Perform a complete memory save to preserve full session context.
+
+1. Read CLAUDE.md and CLAUDE-FULL.md in the project root
+2. Update CLAUDE.md "Memory — Current State" section:
+   - Today's date
+   - Current task/focus and progress
+   - Any blockers, open issues, or important context
+3. Update CLAUDE.md "Memory — Recent Sessions" with a comprehensive entry for this session (keep max 7, drop oldest)
+4. Update CLAUDE.md "Memory — Key Decisions" with any decisions made this session
+5. Append a DETAILED session log to CLAUDE-FULL.md:
+   - Session number, date, full context of work
+   - ALL files changed with descriptions
+   - All decisions made with reasoning
+   - Current state and suggested next steps
+6. Update the line references [L##-L##] in CLAUDE.md to match the new CLAUDE-FULL.md entry
+
+After saving, say "memory saved" and suggest running /compact to free context space.
+SKILL_EOF
+
+info "Installed skills: /save, /save-full"
+
+# ─── Step 4: Merge settings.json ─────────────────────────────────────────────
+step 4 "Configuring settings.json"
 
 # Define mimo's hook configuration as JSON
 MIMO_HOOKS=$(cat <<'MJSON'
@@ -674,8 +734,8 @@ else
     fi
 fi
 
-# ─── Step 4: Install mimo CLI ────────────────────────────────────────────────
-step 4 "Installing mimo CLI"
+# ─── Step 5: Install mimo CLI ────────────────────────────────────────────────
+step 5 "Installing mimo CLI"
 
 mkdir -p "$CLI_DIR"
 
@@ -748,6 +808,16 @@ cmd_status() {
         fail "jq not installed"
     fi
     ok "bash ${BASH_VERSION}"
+
+    echo ""
+    printf "${BOLD}Skills:${NC}\n"
+    for skill in save save-full; do
+        if [ -f "$HOME/.claude/skills/$skill/SKILL.md" ]; then
+            ok "/$skill"
+        else
+            fail "/$skill (not installed)"
+        fi
+    done
 
     echo ""
     printf "${BOLD}Session state:${NC}\n"
@@ -998,6 +1068,11 @@ Commands:
   uninstall   Remove mimo from your system
   help        Show this help
 
+Slash commands (inside Claude Code):
+  /save       Save a quick checkpoint (same as auto-checkpoint at 50%)
+  /save-full  Full memory save (same as auto-save at 80%)
+  /pcompact   Generate context-preserving /compact instructions
+
 Getting started:
   1. mimo is already installed (hooks + settings configured)
   2. Start a Claude Code session — mimo auto-initializes your project
@@ -1052,6 +1127,14 @@ for hook in statusline-memory.sh memory-gate.sh precompact-save.sh session-start
     if [ -f "$HOOKS_DIR/$hook" ]; then
         rm "$HOOKS_DIR/$hook"
         info "Removed $hook"
+    fi
+done
+
+# 1b. Remove skill files
+for skill in save save-full; do
+    if [ -d "$HOME/.claude/skills/$skill" ]; then
+        rm -rf "$HOME/.claude/skills/$skill"
+        info "Removed skill: /$skill"
     fi
 done
 
@@ -1116,8 +1199,8 @@ if ! echo "$PATH" | tr ':' '\n' | grep -q "$HOME/.local/bin"; then
     echo ""
 fi
 
-# ─── Step 5: Done ────────────────────────────────────────────────────────────
-step 5 "Installation complete"
+# ─── Step 6: Done ────────────────────────────────────────────────────────────
+step 6 "Installation complete"
 
 echo ""
 printf "${BOLD}${GREEN}mimo v${MIMO_VERSION} installed successfully!${NC}\n"
@@ -1130,4 +1213,8 @@ echo "Commands:"
 echo "  mimo status     — check installation health"
 echo "  mimo init       — re-initialize memory files in current project"
 echo "  mimo uninstall  — remove mimo"
+echo ""
+echo "Slash commands (inside Claude Code):"
+echo "  /save           — quick checkpoint"
+echo "  /save-full      — full memory save"
 echo ""

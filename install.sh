@@ -3,7 +3,11 @@
 # Usage: curl -fsSL https://raw.githubusercontent.com/ShivanDana/mimo/main/install.sh | bash
 set -euo pipefail
 
-MIMO_VERSION="1.0.0"
+MIMO_VERSION=$(curl -fsSL https://raw.githubusercontent.com/ShivanDana/mimo/main/VERSION 2>/dev/null | tr -d '[:space:]')
+if [ -z "$MIMO_VERSION" ]; then
+    echo "\033[0;31m[mimo]\033[0m Could not fetch version. Check your network connection." >&2
+    exit 1
+fi
 HOOKS_DIR="$HOME/.claude/hooks"
 STATE_DIR="$HOME/.claude/memory-state"
 BACKUP_DIR="$HOME/.claude/backups"

@@ -69,7 +69,6 @@ CHECKPOINT_THRESHOLD=50
 FULLSAVE_THRESHOLD=80
 
 STATE_DIR="$HOME/.claude/memory-state"
-STATE_FILE="$STATE_DIR/state.json"
 BAR_WIDTH=20
 
 mkdir -p "$STATE_DIR"
@@ -80,24 +79,23 @@ INPUT=$(cat)
 # Extract fields
 PERCENTAGE=$(echo "$INPUT" | jq -r '.context_window.used_percentage // 0')
 MODEL=$(echo "$INPUT" | jq -r '.model.display_name // "?"')
-SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // "none"')
+SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // ""' | tr -cd 'a-zA-Z0-9-')
 COST=$(echo "$INPUT" | jq -r '.cost.total_cost_usd // 0')
+
+# Per-session state file (isolates concurrent sessions)
+if [ -z "$SESSION_ID" ]; then SESSION_ID="fallback-$$-$(date +%s)"; fi
+STATE_FILE="$STATE_DIR/${SESSION_ID}.json"
 
 # Round percentage to integer
 PCT_INT=$(printf "%.0f" "$PERCENTAGE")
 if [ "$PCT_INT" -gt 100 ]; then PCT_INT=100; fi
 if [ "$PCT_INT" -lt 0 ]; then PCT_INT=0; fi
 
-# Check if session changed — reset state if so
-CURRENT_SESSION=""
-if [ -f "$STATE_FILE" ]; then
-    CURRENT_SESSION=$(jq -r '.session_id // ""' "$STATE_FILE" 2>/dev/null || echo "")
-fi
-
-if [ "$CURRENT_SESSION" != "$SESSION_ID" ]; then
+# Create state file if it doesn't exist yet
+if [ ! -f "$STATE_FILE" ]; then
     jq -n --arg sid "$SESSION_ID" \
         '{session_id: $sid, percentage: 0, threshold: "clean", checkpoint_done: false, fullsave_done: false}' \
-        > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+        > "${STATE_FILE}.$$.tmp" && mv "${STATE_FILE}.$$.tmp" "$STATE_FILE"
 fi
 
 # Read current done flags
@@ -112,7 +110,7 @@ elif [ "$PCT_INT" -ge "$CHECKPOINT_THRESHOLD" ] && [ "$CHECKPOINT_DONE" = "false
     THRESHOLD="checkpoint_needed"
 fi
 
-# Update state file (atomic write)
+# Update state file (atomic write with PID-based tmp)
 jq -n \
     --arg sid "$SESSION_ID" \
     --argjson pct "$PCT_INT" \
@@ -120,7 +118,7 @@ jq -n \
     --argjson cp_done "$([ "$CHECKPOINT_DONE" = "true" ] && echo true || echo false)" \
     --argjson fs_done "$([ "$FULLSAVE_DONE" = "true" ] && echo true || echo false)" \
     '{session_id: $sid, percentage: $pct, threshold: $threshold, checkpoint_done: $cp_done, fullsave_done: $fs_done}' \
-    > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+    > "${STATE_FILE}.$$.tmp" && mv "${STATE_FILE}.$$.tmp" "$STATE_FILE"
 
 # Build progress bar
 FILLED=$(( PCT_INT * BAR_WIDTH / 100 ))
@@ -159,10 +157,15 @@ cat > "$HOOKS_DIR/memory-gate.sh" << 'HOOK_EOF'
 # Exit 0 = allow stop, Exit 2 = block stop (stderr → Claude as instructions)
 set -euo pipefail
 
-STATE_FILE="$HOME/.claude/memory-state/state.json"
+STATE_DIR="$HOME/.claude/memory-state"
 
 # Read stdin JSON
 INPUT=$(cat)
+
+# Extract session_id for per-session state isolation
+SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // ""' | tr -cd 'a-zA-Z0-9-')
+if [ -z "$SESSION_ID" ]; then SESSION_ID="fallback-$$-$(date +%s)"; fi
+STATE_FILE="$STATE_DIR/${SESSION_ID}.json"
 
 # LOOP BREAKER: If stop_hook_active is true, Claude is already continuing
 # from a previous stop hook block. Allow it to stop now.
@@ -189,10 +192,10 @@ if echo "$LAST_MSG" | grep -qiE '(checkpoint saved|memory saved)'; then
     # Claude already saved — mark done and allow stop
     if [ "$THRESHOLD" = "fullsave_needed" ]; then
         jq '.fullsave_done = true | .checkpoint_done = true | .threshold = "clean"' "$STATE_FILE" \
-            > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+            > "${STATE_FILE}.$$.tmp" && mv "${STATE_FILE}.$$.tmp" "$STATE_FILE"
     elif [ "$THRESHOLD" = "checkpoint_needed" ]; then
         jq '.checkpoint_done = true | .threshold = "clean"' "$STATE_FILE" \
-            > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+            > "${STATE_FILE}.$$.tmp" && mv "${STATE_FILE}.$$.tmp" "$STATE_FILE"
     fi
     exit 0
 fi
@@ -201,7 +204,7 @@ fi
 if [ "$THRESHOLD" = "fullsave_needed" ]; then
     # Mark as done before blocking (prevents re-trigger after Claude saves)
     jq '.fullsave_done = true | .checkpoint_done = true | .threshold = "clean"' "$STATE_FILE" \
-        > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+        > "${STATE_FILE}.$$.tmp" && mv "${STATE_FILE}.$$.tmp" "$STATE_FILE"
 
     cat >&2 <<'INSTRUCTIONS'
 [MIMO — FULL SAVE REQUIRED — Context at 80%+]
@@ -222,7 +225,7 @@ Your context window is nearly full. Perform a complete memory save NOW before co
    - Current state and suggested next steps
 6. Update the line references [L##-L##] in CLAUDE.md to match the new CLAUDE-FULL.md entry
 
-After saving, say "memory saved" and suggest running /compact to free context space.
+After saving, say "memory saved" then IMMEDIATELY resume the task you were working on before this interruption. Pick up exactly where you left off — do not wait for the user to re-ask. If context is very full, suggest /compact but still resume working.
 INSTRUCTIONS
     exit 2
 fi
@@ -231,7 +234,7 @@ fi
 if [ "$THRESHOLD" = "checkpoint_needed" ]; then
     # Mark as done before blocking
     jq '.checkpoint_done = true | .threshold = "clean"' "$STATE_FILE" \
-        > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+        > "${STATE_FILE}.$$.tmp" && mv "${STATE_FILE}.$$.tmp" "$STATE_FILE"
 
     cat >&2 <<'INSTRUCTIONS'
 [MIMO — CHECKPOINT NEEDED — Context at 50%+]
@@ -250,7 +253,7 @@ Save a checkpoint of your current work to preserve context:
    - State at checkpoint
 5. Update line references [L##-L##] in CLAUDE.md
 
-After saving, say "checkpoint saved" and continue working normally.
+After saving, say "checkpoint saved" then IMMEDIATELY resume the task you were working on before this interruption. Pick up exactly where you left off — do not wait for the user to re-ask.
 INSTRUCTIONS
     exit 2
 fi
@@ -309,20 +312,28 @@ cat > "$HOOKS_DIR/session-start.sh" << 'HOOK_EOF'
 set -euo pipefail
 
 STATE_DIR="$HOME/.claude/memory-state"
-STATE_FILE="$STATE_DIR/state.json"
 BACKUP_DIR="$HOME/.claude/backups"
 
 mkdir -p "$STATE_DIR" "$BACKUP_DIR"
 
 # Read stdin JSON
 INPUT=$(cat)
-SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // "none"')
+SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // ""' | tr -cd 'a-zA-Z0-9-')
 CWD=$(echo "$INPUT" | jq -r '.cwd // "."')
 
-# Reset state for new session
-jq -n --arg sid "$SESSION_ID" \
-    '{session_id: $sid, percentage: 0, threshold: "clean", checkpoint_done: false, fullsave_done: false}' \
-    > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+# Per-session state file (isolates concurrent sessions)
+if [ -z "$SESSION_ID" ]; then SESSION_ID="fallback-$$-$(date +%s)"; fi
+STATE_FILE="$STATE_DIR/${SESSION_ID}.json"
+
+# Create state for new session (idempotent — preserves existing state on resume)
+if [ ! -f "$STATE_FILE" ]; then
+    jq -n --arg sid "$SESSION_ID" \
+        '{session_id: $sid, percentage: 0, threshold: "clean", checkpoint_done: false, fullsave_done: false}' \
+        > "${STATE_FILE}.$$.tmp" && mv "${STATE_FILE}.$$.tmp" "$STATE_FILE"
+fi
+
+# Clean up orphan state files from crashed sessions (7-day threshold)
+find "$STATE_DIR" -name "*.json" -mtime +7 -delete 2>/dev/null || true
 
 # ─── Auto-init: create CLAUDE.md and CLAUDE-FULL.md if missing ───────────────
 WORKFLOW_MARKER="## Workflow Orchestration"
@@ -560,12 +571,13 @@ cat > "$HOOKS_DIR/session-end-backup.sh" << 'HOOK_EOF'
 set -euo pipefail
 
 BACKUP_DIR="$HOME/.claude/backups"
-STATE_FILE="$HOME/.claude/memory-state/state.json"
+STATE_DIR="$HOME/.claude/memory-state"
 mkdir -p "$BACKUP_DIR"
 
 # Read stdin JSON
 INPUT=$(cat)
 TRANSCRIPT=$(echo "$INPUT" | jq -r '.transcript_path // ""')
+SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // ""' | tr -cd 'a-zA-Z0-9-')
 
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 
@@ -574,8 +586,10 @@ if [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ]; then
     cp "$TRANSCRIPT" "$BACKUP_DIR/${TIMESTAMP}-end.jsonl"
 fi
 
-# Clean up state file for this session
-rm -f "$STATE_FILE"
+# Clean up only THIS session's state file (never use wildcards)
+if [ -n "$SESSION_ID" ] && [ "$SESSION_ID" != "none" ]; then
+    rm -f "$STATE_DIR/${SESSION_ID}.json"
+fi
 HOOK_EOF
 
 # Stamp version into all hooks
@@ -613,7 +627,7 @@ Save a checkpoint of your current work to preserve context:
    - State at checkpoint
 5. Update line references [L##-L##] in CLAUDE.md
 
-After saving, say "checkpoint saved" and continue working normally.
+After saving, say "checkpoint saved" then IMMEDIATELY resume the task you were working on before this interruption. Pick up exactly where you left off — do not wait for the user to re-ask.
 SKILL_EOF
 
 cat > "$SKILLS_DIR/save-full/SKILL.md" << 'SKILL_EOF'
@@ -640,7 +654,7 @@ Perform a complete memory save to preserve full session context.
    - Current state and suggested next steps
 6. Update the line references [L##-L##] in CLAUDE.md to match the new CLAUDE-FULL.md entry
 
-After saving, say "memory saved" and suggest running /compact to free context space.
+After saving, say "memory saved" then IMMEDIATELY resume the task you were working on before this interruption. Pick up exactly where you left off — do not wait for the user to re-ask. If context is very full, suggest /compact but still resume working.
 SKILL_EOF
 
 info "Installed skills: /save, /save-full"
@@ -750,7 +764,7 @@ set -euo pipefail
 
 MIMO_VERSION="__VERSION__"
 HOOKS_DIR="$HOME/.claude/hooks"
-STATE_FILE="$HOME/.claude/memory-state/state.json"
+STATE_DIR="$HOME/.claude/memory-state"
 SETTINGS_FILE="$HOME/.claude/settings.json"
 
 RED='\033[0;31m'
@@ -824,13 +838,20 @@ cmd_status() {
     done
 
     echo ""
-    printf "${BOLD}Session state:${NC}\n"
-    if [ -f "$STATE_FILE" ]; then
-        PCT=$(jq -r '.percentage // 0' "$STATE_FILE" 2>/dev/null || echo "0")
-        THRESHOLD=$(jq -r '.threshold // "clean"' "$STATE_FILE" 2>/dev/null || echo "clean")
-        ok "Context: ${PCT}%, threshold: ${THRESHOLD}"
-    else
-        dim "No active session"
+    printf "${BOLD}Active sessions:${NC}\n"
+    SESSION_COUNT=0
+    if [ -d "$STATE_DIR" ]; then
+        for sf in "$STATE_DIR"/*.json; do
+            [ -f "$sf" ] || continue
+            SESSION_COUNT=$((SESSION_COUNT + 1))
+            SID=$(jq -r '.session_id // "?"' "$sf" 2>/dev/null || echo "?")
+            PCT=$(jq -r '.percentage // 0' "$sf" 2>/dev/null || echo "0")
+            THRESHOLD=$(jq -r '.threshold // "clean"' "$sf" 2>/dev/null || echo "clean")
+            ok "${SID}: ${PCT}%, threshold: ${THRESHOLD}"
+        done
+    fi
+    if [ "$SESSION_COUNT" -eq 0 ]; then
+        dim "No active sessions"
     fi
 
     echo ""

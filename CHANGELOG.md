@@ -2,6 +2,21 @@
 
 All notable changes to mimo will be documented in this file.
 
+## [1.3.0] - 2026-02-25
+
+### Fixed
+- **Save interruption now resumes work**: After a checkpoint (50%) or full save (80%) interruption, Claude now immediately picks up the interrupted task instead of stopping and waiting for user input
+- **Concurrent session isolation**: Each Claude Code session now gets its own state file (`~/.claude/memory-state/<session-id>.json`), fixing race conditions when running multiple projects simultaneously
+  - Sessions no longer overwrite each other's context thresholds
+  - Ending one session no longer deletes other sessions' state
+  - Stop hook no longer blocks wrong sessions from stopping
+
+### Changed
+- `mimo status` now shows all active sessions with per-session context percentages
+- State file cleanup uses 7-day threshold for crash orphans (safe for long-running sessions)
+- Session state creation is idempotent on resume (preserves checkpoint/save flags)
+- Session IDs are sanitized for safe filesystem use
+
 ## [1.2.0] - 2026-02-25
 
 ### Added

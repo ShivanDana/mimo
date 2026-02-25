@@ -27,8 +27,9 @@ flowchart LR
 
 ## What it does
 
-- **Automatic memory saves** — checkpoints at 50% context, full save at 80%. Claude writes session state to disk before context is lost
+- **Automatic memory saves** — checkpoints at 50% context, full save at 80%. Claude writes session state to disk before context is lost, then resumes the interrupted task automatically
 - **Two-tier archive** — compact index in `CLAUDE.md` (auto-loaded every session) + detailed logs in `CLAUDE-FULL.md` (read on demand)
+- **Multi-project safe** — run 3+ Claude Code sessions simultaneously with fully isolated state per session
 - **Zero configuration** — install once, start a session, mimo auto-initializes everything. Use `/save` anytime to save manually
 
 ## Quick start
@@ -182,17 +183,17 @@ mimo installs 6 hooks into Claude Code's hook system:
 
 | Hook | Event | What it does |
 |------|-------|-------------|
-| `statusline-memory.sh` | StatusLine | Colored progress bar with context %, model, cost, threshold indicators |
-| `session-start.sh` | SessionStart (startup/resume) | Resets state, auto-inits project files, injects memory context |
+| `statusline-memory.sh` | StatusLine | Colored progress bar with context %, model, cost, threshold indicators. Writes per-session state |
+| `session-start.sh` | SessionStart (startup/resume) | Creates per-session state, auto-inits project files, injects memory context, cleans up stale state (7-day) |
 | `session-start-compact.sh` | SessionStart (compact) | Lightweight context reminder after compaction (preserves save flags) |
-| `memory-gate.sh` | Stop | Blocks Claude from stopping until memory save is complete |
+| `memory-gate.sh` | Stop | Blocks Claude from stopping until memory save is complete, then instructs Claude to resume the interrupted task |
 | `precompact-save.sh` | PreCompact | Backs up full transcript + generates human-readable summary |
-| `session-end-backup.sh` | SessionEnd | Final transcript backup, cleans up session state |
+| `session-end-backup.sh` | SessionEnd | Final transcript backup, cleans up this session's state file only |
 
 ## CLI
 
 ```bash
-mimo status      # Diagnostic: hooks, skills, settings, dependencies, session state
+mimo status      # Diagnostic: hooks, skills, settings, dependencies, active sessions
 mimo init        # Re-initialize memory files in current project
 mimo version     # Print version
 mimo uninstall   # Remove mimo (preserves your memory data)
@@ -206,7 +207,7 @@ mimo uninstall   # Remove mimo (preserves your memory data)
 | `~/.claude/skills/save/SKILL.md` | `/save` slash command | Install |
 | `~/.claude/skills/save-full/SKILL.md` | `/save-full` slash command | Install |
 | `~/.claude/settings.json` | Hook + statusline registration (merged) | Install |
-| `~/.claude/memory-state/state.json` | Session state (context %, thresholds, flags) | First session |
+| `~/.claude/memory-state/<session-id>.json` | Per-session state (context %, thresholds, flags) | Each session |
 | `~/.claude/backups/*.jsonl` | Transcript backups (pre-compact + session-end) | During sessions |
 | `~/.local/bin/mimo` | CLI binary | Install |
 | `<project>/CLAUDE.md` | Compact memory index (auto-loaded) | First session in project |
@@ -271,8 +272,8 @@ Dependencies:
   [ok] jq 1.7.1
   [ok] bash 5.2.37(1)-release
 
-Session state:
-  [-]  No active session
+Active sessions:
+  [-]  No active sessions
 
 Current project:
   [ok] CLAUDE.md has memory sections
@@ -301,7 +302,13 @@ Yes. Uninstall removes hooks, settings entries, and the CLI, but preserves all y
 When mimo creates `CLAUDE.md`, it includes a "Workflow Orchestration" section with opinionated best practices: plan mode for non-trivial tasks, subagent strategy, self-improvement loop, verification before done, demand elegance, and autonomous bug fixing. You can edit or remove this block — it's just guidance, not required for memory to work.
 
 **Can I trigger a save without waiting for the threshold?**
-Yes. Use `/save` for a quick checkpoint or `/save-full` for a comprehensive save at any time.
+Yes. Use `/save` for a quick checkpoint or `/save-full` for a comprehensive save at any time. Claude will resume your interrupted task after saving.
+
+**Does mimo work with multiple projects open at the same time?**
+Yes. Each Claude Code session gets its own isolated state file (`~/.claude/memory-state/<session-id>.json`). Sessions cannot interfere with each other — checkpoints, thresholds, and save flags are fully independent. You can run an iOS project, a React CRM, and a research session simultaneously without issues.
+
+**Does Claude resume working after a save interruption?**
+Yes. When the stop hook triggers at 50% or 80%, Claude performs the save and then immediately picks up the task it was working on before the interruption. No need to re-ask.
 
 ## Uninstall
 
@@ -315,7 +322,7 @@ Or standalone:
 curl -fsSL https://raw.githubusercontent.com/ShivanDana/mimo/main/uninstall.sh | bash
 ```
 
-This removes hooks, skills, settings entries, and the CLI but **preserves your data** — backups, session state, and project memory files.
+This removes hooks, skills, settings entries, and the CLI but **preserves your data** — backups, per-session state files, and project memory files.
 
 ## License
 

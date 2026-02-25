@@ -21,4 +21,4 @@ Perform a complete memory save to preserve full session context.
    - Current state and suggested next steps
 6. Update the line references [L##-L##] in CLAUDE.md to match the new CLAUDE-FULL.md entry
 
-After saving, say "memory saved" and suggest running /compact to free context space.
+After saving, say "memory saved" then IMMEDIATELY resume the task you were working on before this interruption. Pick up exactly where you left off — do not wait for the user to re-ask. If context is very full, suggest /compact but still resume working.

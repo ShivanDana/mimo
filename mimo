@@ -4,7 +4,7 @@ set -euo pipefail
 
 MIMO_VERSION=$(cat "$(dirname "$0")/VERSION" 2>/dev/null || echo "dev")
 HOOKS_DIR="$HOME/.claude/hooks"
-STATE_FILE="$HOME/.claude/memory-state/state.json"
+STATE_DIR="$HOME/.claude/memory-state"
 SETTINGS_FILE="$HOME/.claude/settings.json"
 
 RED='\033[0;31m'
@@ -76,13 +76,20 @@ cmd_status() {
     done
 
     echo ""
-    printf "${BOLD}Session state:${NC}\n"
-    if [ -f "$STATE_FILE" ]; then
-        PCT=$(jq -r '.percentage // 0' "$STATE_FILE" 2>/dev/null || echo "0")
-        THRESHOLD=$(jq -r '.threshold // "clean"' "$STATE_FILE" 2>/dev/null || echo "clean")
-        ok "Context: ${PCT}%, threshold: ${THRESHOLD}"
-    else
-        dim "No active session"
+    printf "${BOLD}Active sessions:${NC}\n"
+    SESSION_COUNT=0
+    if [ -d "$STATE_DIR" ]; then
+        for sf in "$STATE_DIR"/*.json; do
+            [ -f "$sf" ] || continue
+            SESSION_COUNT=$((SESSION_COUNT + 1))
+            SID=$(jq -r '.session_id // "?"' "$sf" 2>/dev/null || echo "?")
+            PCT=$(jq -r '.percentage // 0' "$sf" 2>/dev/null || echo "0")
+            THRESHOLD=$(jq -r '.threshold // "clean"' "$sf" 2>/dev/null || echo "clean")
+            ok "${SID}: ${PCT}%, threshold: ${THRESHOLD}"
+        done
+    fi
+    if [ "$SESSION_COUNT" -eq 0 ]; then
+        dim "No active sessions"
     fi
 
     echo ""

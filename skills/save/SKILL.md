@@ -19,4 +19,4 @@ Save a checkpoint of your current work to preserve context:
    - State at checkpoint
 5. Update line references [L##-L##] in CLAUDE.md
 
-After saving, say "checkpoint saved" and continue working normally.
+After saving, say "checkpoint saved" then IMMEDIATELY resume the task you were working on before this interruption. Pick up exactly where you left off — do not wait for the user to re-ask.

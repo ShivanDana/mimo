@@ -4,10 +4,18 @@
 # Exit 0 = allow stop, Exit 2 = block stop (stderr → Claude as instructions)
 set -euo pipefail
 
-STATE_FILE="$HOME/.claude/memory-state/state.json"
+STATE_DIR="$HOME/.claude/memory-state"
 
 # Read stdin JSON
 INPUT=$(cat)
+
+# Extract session_id for per-session state isolation
+STATE_FILE="${MIMO_STATE_FILE:-}"
+if [ -z "$STATE_FILE" ]; then
+    SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // ""' | tr -cd 'a-zA-Z0-9-')
+    [ -z "$SESSION_ID" ] && SESSION_ID="fallback-$$-$(date +%s)"
+    STATE_FILE="$STATE_DIR/${SESSION_ID}.json"
+fi
 
 # LOOP BREAKER: If stop_hook_active is true, Claude is already continuing
 # from a previous stop hook block. Allow it to stop now.
@@ -34,21 +42,33 @@ if echo "$LAST_MSG" | grep -qiE '(checkpoint saved|memory saved)'; then
     # Claude already saved — mark done and allow stop
     if [ "$THRESHOLD" = "fullsave_needed" ]; then
         jq '.fullsave_done = true | .checkpoint_done = true | .threshold = "clean"' "$STATE_FILE" \
-            > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+            > "${STATE_FILE}.$$.tmp" && mv "${STATE_FILE}.$$.tmp" "$STATE_FILE"
     elif [ "$THRESHOLD" = "checkpoint_needed" ]; then
         jq '.checkpoint_done = true | .threshold = "clean"' "$STATE_FILE" \
-            > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+            > "${STATE_FILE}.$$.tmp" && mv "${STATE_FILE}.$$.tmp" "$STATE_FILE"
     fi
     exit 0
+fi
+
+# Build tracked files list for save instructions
+CHANGES_LOG="${MIMO_CHANGES_LOG:-}"
+if [ -z "$CHANGES_LOG" ]; then
+    SID=$(basename "$STATE_FILE" .json)
+    CHANGES_LOG="$STATE_DIR/${SID}-changes.log"
+fi
+TRACKED_FILES=""
+if [ -f "$CHANGES_LOG" ]; then
+    TRACKED_FILES=$(sort -u "$CHANGES_LOG" 2>/dev/null | head -50)
 fi
 
 # FULL SAVE (80%+)
 if [ "$THRESHOLD" = "fullsave_needed" ]; then
     # Mark as done before blocking (prevents re-trigger after Claude saves)
     jq '.fullsave_done = true | .checkpoint_done = true | .threshold = "clean"' "$STATE_FILE" \
-        > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+        > "${STATE_FILE}.$$.tmp" && mv "${STATE_FILE}.$$.tmp" "$STATE_FILE"
 
-    cat >&2 <<'INSTRUCTIONS'
+    {
+        cat <<'INSTRUCTIONS'
 [MIMO — FULL SAVE REQUIRED — Context at 80%+]
 
 Your context window is nearly full. Perform a complete memory save NOW before context is lost.
@@ -67,8 +87,14 @@ Your context window is nearly full. Perform a complete memory save NOW before co
    - Current state and suggested next steps
 6. Update the line references [L##-L##] in CLAUDE.md to match the new CLAUDE-FULL.md entry
 
-After saving, say "memory saved" and suggest running /compact to free context space.
+After saving, say "memory saved" then IMMEDIATELY resume the task you were working on before this interruption. Pick up exactly where you left off — do not wait for the user to re-ask. If context is very full, suggest /compact but still resume working.
 INSTRUCTIONS
+        if [ -n "$TRACKED_FILES" ]; then
+            echo ""
+            echo "Files modified this session (tracked by mimo):"
+            echo "$TRACKED_FILES"
+        fi
+    } >&2
     exit 2
 fi
 
@@ -76,9 +102,10 @@ fi
 if [ "$THRESHOLD" = "checkpoint_needed" ]; then
     # Mark as done before blocking
     jq '.checkpoint_done = true | .threshold = "clean"' "$STATE_FILE" \
-        > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+        > "${STATE_FILE}.$$.tmp" && mv "${STATE_FILE}.$$.tmp" "$STATE_FILE"
 
-    cat >&2 <<'INSTRUCTIONS'
+    {
+        cat <<'INSTRUCTIONS'
 [MIMO — CHECKPOINT NEEDED — Context at 50%+]
 
 Save a checkpoint of your current work to preserve context:
@@ -95,8 +122,14 @@ Save a checkpoint of your current work to preserve context:
    - State at checkpoint
 5. Update line references [L##-L##] in CLAUDE.md
 
-After saving, say "checkpoint saved" and continue working normally.
+After saving, say "checkpoint saved" then IMMEDIATELY resume the task you were working on before this interruption. Pick up exactly where you left off — do not wait for the user to re-ask.
 INSTRUCTIONS
+        if [ -n "$TRACKED_FILES" ]; then
+            echo ""
+            echo "Files modified this session (tracked by mimo):"
+            echo "$TRACKED_FILES"
+        fi
+    } >&2
     exit 2
 fi
 

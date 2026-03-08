@@ -30,6 +30,9 @@ flowchart LR
 - **Automatic memory saves** — checkpoints at 50% context, full save at 80%. Claude writes session state to disk before context is lost, then resumes the interrupted task automatically
 - **Two-tier archive** — compact index in `CLAUDE.md` (auto-loaded every session) + detailed logs in `CLAUDE-FULL.md` (read on demand)
 - **Multi-project safe** — run 3+ Claude Code sessions simultaneously with fully isolated state per session
+- **Subagent awareness** — subagents automatically receive session state and context % so they share the parent session's memory
+- **File change tracking** — modified files are tracked per-session and included in save instructions so nothing is missed
+- **Post-compact recovery** — memory state is automatically injected after compaction without extra tool calls
 - **Zero configuration** — install once, start a session, mimo auto-initializes everything. Use `/save` anytime to save manually
 
 ## Quick start
@@ -108,26 +111,28 @@ sequenceDiagram
     U->>C: Start session
     C->>M: Read memory sections
     U->>C: Work on tasks
+    Note over C: File edits tracked automatically
+    Note over C: Subagents receive memory context
     Note over C: Context hits 50%
     C->>M: Update Current State + Recent Sessions
     C->>F: Append brief session log
     Note over C: Context hits 80%
-    C->>M: Full update (all memory sections)
+    C->>M: Full update (all sections + tracked files)
     C->>F: Append detailed session log
     C->>B: Transcript backup
     end
 
     rect rgb(255, 243, 205)
     Note over U,B: /compact
-    C->>B: Pre-compact transcript backup
+    C->>B: Pre-compact backup + compact instructions
     Note over C: Context freed
     end
 
     rect rgb(212, 237, 218)
-    Note over U,B: Session 2 (or post-compact)
-    C->>M: Read memory sections
+    Note over U,B: Post-compact
+    C->>M: Memory state auto-injected
     C-->>F: Read specific lines if needed
-    Note over C: Picks up where Session 1 left off
+    Note over C: Picks up where it left off
     end
 ```
 
@@ -179,16 +184,19 @@ If a `CLAUDE.md` already exists, mimo preserves your content and only adds the m
 
 ### Hook reference
 
-mimo installs 6 hooks into Claude Code's hook system:
+mimo installs 9 hooks into Claude Code's hook system:
 
 | Hook | Event | What it does |
 |------|-------|-------------|
 | `statusline-memory.sh` | StatusLine | Colored progress bar with context %, model, cost, threshold indicators. Writes per-session state |
-| `session-start.sh` | SessionStart (startup/resume) | Creates per-session state, auto-inits project files, injects memory context, cleans up stale state (7-day) |
-| `session-start-compact.sh` | SessionStart (compact) | Lightweight context reminder after compaction (preserves save flags) |
-| `memory-gate.sh` | Stop | Blocks Claude from stopping until memory save is complete, then instructs Claude to resume the interrupted task |
-| `precompact-save.sh` | PreCompact | Backs up full transcript + generates human-readable summary |
-| `session-end-backup.sh` | SessionEnd | Final transcript backup, cleans up this session's state file only |
+| `session-start.sh` | SessionStart (startup/resume) | Creates per-session state, auto-inits project files, injects memory context, exports env vars via `CLAUDE_ENV_FILE`, cleans up stale state (7-day) |
+| `session-start-compact.sh` | SessionStart (compact) | Lightweight context reminder after compaction, writes post-compact flag for context recovery |
+| `memory-gate.sh` | Stop | Blocks Claude from stopping until memory save is complete. Includes tracked file list in save instructions, then instructs Claude to resume |
+| `precompact-save.sh` | PreCompact | Backs up full transcript + generates human-readable summary + outputs custom compact instructions |
+| `session-end-backup.sh` | SessionEnd | Final transcript backup, cleans up session state file, changes log, and post-compact flag |
+| `subagent-context.sh` | SubagentStart | Injects "Memory — Current State" and context % into subagent context |
+| `user-prompt-context.sh` | UserPromptSubmit | One-shot post-compact context recovery — injects memory state on first prompt after compaction (zero overhead normally) |
+| `track-changes.sh` | PostToolUse (Write\|Edit) | Async file change tracker — appends modified file paths to per-session log |
 
 ## CLI
 
@@ -203,11 +211,13 @@ mimo uninstall   # Remove mimo (preserves your memory data)
 
 | Path | What | Created |
 |------|------|---------|
-| `~/.claude/hooks/*.sh` | 6 hook scripts | Install |
+| `~/.claude/hooks/*.sh` | 9 hook scripts | Install |
 | `~/.claude/skills/save/SKILL.md` | `/save` slash command | Install |
 | `~/.claude/skills/save-full/SKILL.md` | `/save-full` slash command | Install |
 | `~/.claude/settings.json` | Hook + statusline registration (merged) | Install |
 | `~/.claude/memory-state/<session-id>.json` | Per-session state (context %, thresholds, flags) | Each session |
+| `~/.claude/memory-state/<session-id>-changes.log` | Per-session file change tracker | During sessions |
+| `~/.claude/memory-state/<session-id>-postcompact.flag` | One-shot post-compact context recovery flag | After compaction |
 | `~/.claude/backups/*.jsonl` | Transcript backups (pre-compact + session-end) | During sessions |
 | `~/.local/bin/mimo` | CLI binary | Install |
 | `<project>/CLAUDE.md` | Compact memory index (auto-loaded) | First session in project |
@@ -259,9 +269,12 @@ Hook scripts:
   [ok] session-start.sh
   [ok] session-start-compact.sh
   [ok] session-end-backup.sh
+  [ok] subagent-context.sh
+  [ok] user-prompt-context.sh
+  [ok] track-changes.sh
 
 Settings:
-  [ok] Hooks registered in settings.json (6 entries)
+  [ok] Hooks registered in settings.json (9 entries)
   [ok] StatusLine configured
 
 Skills:
@@ -293,7 +306,7 @@ Current project:
 Yes. mimo detects existing content and only adds what's missing — workflow guidance prepended at the top, memory sections appended at the bottom. Your content is never overwritten.
 
 **What happens when I run /compact?**
-mimo backs up the full transcript before compaction, then injects a lightweight reminder after compaction so Claude knows to read the memory sections. Save flags (checkpoint_done, fullsave_done) persist across compaction.
+mimo backs up the full transcript before compaction and outputs custom instructions to preserve critical context. After compaction, the session-start hook injects a reminder, and the UserPromptSubmit hook automatically injects your memory state (current focus, key decisions) on your first prompt — no need to manually read CLAUDE.md. Save flags persist across compaction.
 
 **Is my data safe when I uninstall?**
 Yes. Uninstall removes hooks, settings entries, and the CLI, but preserves all your data: `~/.claude/backups/`, `~/.claude/memory-state/`, and project `CLAUDE.md`/`CLAUDE-FULL.md` files.
@@ -309,6 +322,12 @@ Yes. Each Claude Code session gets its own isolated state file (`~/.claude/memor
 
 **Does Claude resume working after a save interruption?**
 Yes. When the stop hook triggers at 50% or 80%, Claude performs the save and then immediately picks up the task it was working on before the interruption. No need to re-ask.
+
+**Do subagents know about mimo?**
+Yes. The SubagentStart hook automatically injects "Memory — Current State" and the parent session's context % into every subagent. Subagents can see what you're working on and how much context remains without any extra configuration.
+
+**Are file changes tracked?**
+Yes. The PostToolUse hook runs asynchronously after every Write or Edit operation and appends the file path to a per-session changes log. When a checkpoint or full save is triggered, the save instructions include the full list of files modified in the session, so nothing is forgotten.
 
 ## Uninstall
 

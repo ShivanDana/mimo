@@ -28,7 +28,7 @@ cmd_status() {
 
     # Hook scripts
     printf "${BOLD}Hook scripts:${NC}\n"
-    for hook in statusline-memory.sh memory-gate.sh precompact-save.sh session-start.sh session-start-compact.sh session-end-backup.sh; do
+    for hook in statusline-memory.sh memory-gate.sh precompact-save.sh session-start.sh session-start-compact.sh session-end-backup.sh subagent-context.sh user-prompt-context.sh track-changes.sh; do
         if [ -x "$HOOKS_DIR/$hook" ]; then
             ok "$hook"
         else

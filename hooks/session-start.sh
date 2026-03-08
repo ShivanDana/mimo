@@ -4,20 +4,36 @@
 set -euo pipefail
 
 STATE_DIR="$HOME/.claude/memory-state"
-STATE_FILE="$STATE_DIR/state.json"
 BACKUP_DIR="$HOME/.claude/backups"
 
 mkdir -p "$STATE_DIR" "$BACKUP_DIR"
 
 # Read stdin JSON
 INPUT=$(cat)
-SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // "none"')
+SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // ""' | tr -cd 'a-zA-Z0-9-')
 CWD=$(echo "$INPUT" | jq -r '.cwd // "."')
 
-# Reset state for new session
-jq -n --arg sid "$SESSION_ID" \
-    '{session_id: $sid, percentage: 0, threshold: "clean", checkpoint_done: false, fullsave_done: false}' \
-    > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+# Per-session state file (isolates concurrent sessions)
+if [ -z "$SESSION_ID" ]; then SESSION_ID="fallback-$$-$(date +%s)"; fi
+STATE_FILE="$STATE_DIR/${SESSION_ID}.json"
+
+# Create state for new session (idempotent — preserves existing state on resume)
+if [ ! -f "$STATE_FILE" ]; then
+    jq -n --arg sid "$SESSION_ID" \
+        '{session_id: $sid, percentage: 0, threshold: "clean", checkpoint_done: false, fullsave_done: false}' \
+        > "${STATE_FILE}.$$.tmp" && mv "${STATE_FILE}.$$.tmp" "$STATE_FILE"
+fi
+
+# Export env vars for other hooks via CLAUDE_ENV_FILE
+if [ -n "${CLAUDE_ENV_FILE:-}" ]; then
+    echo "export MIMO_SESSION_ID=\"$SESSION_ID\"" >> "$CLAUDE_ENV_FILE"
+    echo "export MIMO_STATE_FILE=\"$STATE_FILE\"" >> "$CLAUDE_ENV_FILE"
+    echo "export MIMO_CHANGES_LOG=\"$STATE_DIR/${SESSION_ID}-changes.log\"" >> "$CLAUDE_ENV_FILE"
+    echo "export MIMO_CWD=\"$CWD\"" >> "$CLAUDE_ENV_FILE"
+fi
+
+# Clean up orphan state files from crashed sessions (7-day threshold)
+find "$STATE_DIR" -name "*.json" -mtime +7 -delete 2>/dev/null || true
 
 # ─── Auto-init: create CLAUDE.md and CLAUDE-FULL.md if missing ───────────────
 WORKFLOW_MARKER="## Workflow Orchestration"

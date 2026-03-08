@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# mimo — PreCompact transcript backup
-# Copies transcript before compaction destroys it. Runs async, cannot block.
+# mimo — PreCompact hook: transcript backup + custom compact instructions
+# Copies transcript before compaction and outputs instructions for better compaction quality
 set -euo pipefail
 
 BACKUP_DIR="$HOME/.claude/backups"
@@ -39,3 +39,6 @@ if [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ]; then
         ' "$TRANSCRIPT" 2>/dev/null | head -50 || echo "(could not parse transcript)"
     } > "$BACKUP_DIR/${TIMESTAMP}-precompact-summary.md"
 fi
+
+# Output custom compact instructions for better compaction quality
+jq -n '{hookSpecificOutput: {hookEventName: "PreCompact", additionalContext: "When compacting, preserve: (1) current task/focus and progress, (2) key decisions made this session, (3) files modified and their purposes, (4) any blockers or open issues. These are critical for mimo session continuity."}}'

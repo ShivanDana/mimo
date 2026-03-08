@@ -23,7 +23,7 @@ echo ""
 
 # ─── 1. Remove hook scripts ──────────────────────────────────────────────────
 REMOVED=0
-for hook in statusline-memory.sh memory-gate.sh precompact-save.sh session-start.sh session-start-compact.sh session-end-backup.sh; do
+for hook in statusline-memory.sh memory-gate.sh precompact-save.sh session-start.sh session-start-compact.sh session-end-backup.sh subagent-context.sh user-prompt-context.sh track-changes.sh; do
     if [ -f "$HOOKS_DIR/$hook" ]; then
         rm "$HOOKS_DIR/$hook"
         info "Removed $hook"
@@ -98,6 +98,7 @@ echo "  ~/.claude/memory-state/  — session state"
 echo "  Project CLAUDE.md and CLAUDE-FULL.md files"
 echo ""
 echo "To remove all data: rm -rf ~/.claude/backups ~/.claude/memory-state"
+echo "  (includes session state, changes logs, and post-compact flags)"
 echo ""
 info "mimo has been uninstalled. Your memory data is intact."
 echo ""

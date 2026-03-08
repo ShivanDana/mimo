@@ -82,9 +82,12 @@ MODEL=$(echo "$INPUT" | jq -r '.model.display_name // "?"')
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // ""' | tr -cd 'a-zA-Z0-9-')
 COST=$(echo "$INPUT" | jq -r '.cost.total_cost_usd // 0')
 
-# Per-session state file (isolates concurrent sessions)
-if [ -z "$SESSION_ID" ]; then SESSION_ID="fallback-$$-$(date +%s)"; fi
-STATE_FILE="$STATE_DIR/${SESSION_ID}.json"
+# Per-session state file
+STATE_FILE="${MIMO_STATE_FILE:-}"
+if [ -z "$STATE_FILE" ]; then
+    [ -z "$SESSION_ID" ] && SESSION_ID="fallback-$$-$(date +%s)"
+    STATE_FILE="$STATE_DIR/${SESSION_ID}.json"
+fi
 
 # Round percentage to integer
 PCT_INT=$(printf "%.0f" "$PERCENTAGE")
@@ -163,9 +166,12 @@ STATE_DIR="$HOME/.claude/memory-state"
 INPUT=$(cat)
 
 # Extract session_id for per-session state isolation
-SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // ""' | tr -cd 'a-zA-Z0-9-')
-if [ -z "$SESSION_ID" ]; then SESSION_ID="fallback-$$-$(date +%s)"; fi
-STATE_FILE="$STATE_DIR/${SESSION_ID}.json"
+STATE_FILE="${MIMO_STATE_FILE:-}"
+if [ -z "$STATE_FILE" ]; then
+    SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // ""' | tr -cd 'a-zA-Z0-9-')
+    [ -z "$SESSION_ID" ] && SESSION_ID="fallback-$$-$(date +%s)"
+    STATE_FILE="$STATE_DIR/${SESSION_ID}.json"
+fi
 
 # LOOP BREAKER: If stop_hook_active is true, Claude is already continuing
 # from a previous stop hook block. Allow it to stop now.
@@ -200,13 +206,25 @@ if echo "$LAST_MSG" | grep -qiE '(checkpoint saved|memory saved)'; then
     exit 0
 fi
 
+# Build tracked files list for save instructions
+CHANGES_LOG="${MIMO_CHANGES_LOG:-}"
+if [ -z "$CHANGES_LOG" ]; then
+    SID=$(basename "$STATE_FILE" .json)
+    CHANGES_LOG="$STATE_DIR/${SID}-changes.log"
+fi
+TRACKED_FILES=""
+if [ -f "$CHANGES_LOG" ]; then
+    TRACKED_FILES=$(sort -u "$CHANGES_LOG" 2>/dev/null | head -50)
+fi
+
 # FULL SAVE (80%+)
 if [ "$THRESHOLD" = "fullsave_needed" ]; then
     # Mark as done before blocking (prevents re-trigger after Claude saves)
     jq '.fullsave_done = true | .checkpoint_done = true | .threshold = "clean"' "$STATE_FILE" \
         > "${STATE_FILE}.$$.tmp" && mv "${STATE_FILE}.$$.tmp" "$STATE_FILE"
 
-    cat >&2 <<'INSTRUCTIONS'
+    {
+        cat <<'INSTRUCTIONS'
 [MIMO — FULL SAVE REQUIRED — Context at 80%+]
 
 Your context window is nearly full. Perform a complete memory save NOW before context is lost.
@@ -227,6 +245,12 @@ Your context window is nearly full. Perform a complete memory save NOW before co
 
 After saving, say "memory saved" then IMMEDIATELY resume the task you were working on before this interruption. Pick up exactly where you left off — do not wait for the user to re-ask. If context is very full, suggest /compact but still resume working.
 INSTRUCTIONS
+        if [ -n "$TRACKED_FILES" ]; then
+            echo ""
+            echo "Files modified this session (tracked by mimo):"
+            echo "$TRACKED_FILES"
+        fi
+    } >&2
     exit 2
 fi
 
@@ -236,7 +260,8 @@ if [ "$THRESHOLD" = "checkpoint_needed" ]; then
     jq '.checkpoint_done = true | .threshold = "clean"' "$STATE_FILE" \
         > "${STATE_FILE}.$$.tmp" && mv "${STATE_FILE}.$$.tmp" "$STATE_FILE"
 
-    cat >&2 <<'INSTRUCTIONS'
+    {
+        cat <<'INSTRUCTIONS'
 [MIMO — CHECKPOINT NEEDED — Context at 50%+]
 
 Save a checkpoint of your current work to preserve context:
@@ -255,6 +280,12 @@ Save a checkpoint of your current work to preserve context:
 
 After saving, say "checkpoint saved" then IMMEDIATELY resume the task you were working on before this interruption. Pick up exactly where you left off — do not wait for the user to re-ask.
 INSTRUCTIONS
+        if [ -n "$TRACKED_FILES" ]; then
+            echo ""
+            echo "Files modified this session (tracked by mimo):"
+            echo "$TRACKED_FILES"
+        fi
+    } >&2
     exit 2
 fi
 
@@ -263,8 +294,8 @@ HOOK_EOF
 
 cat > "$HOOKS_DIR/precompact-save.sh" << 'HOOK_EOF'
 #!/usr/bin/env bash
-# mimo v__VERSION__ — PreCompact transcript backup
-# Copies transcript before compaction destroys it. Runs async, cannot block.
+# mimo v__VERSION__ — PreCompact hook: transcript backup + custom compact instructions
+# Copies transcript before compaction and outputs instructions for better compaction quality
 set -euo pipefail
 
 BACKUP_DIR="$HOME/.claude/backups"
@@ -303,6 +334,9 @@ if [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ]; then
         ' "$TRANSCRIPT" 2>/dev/null | head -50 || echo "(could not parse transcript)"
     } > "$BACKUP_DIR/${TIMESTAMP}-precompact-summary.md"
 fi
+
+# Output custom compact instructions for better compaction quality
+jq -n '{hookSpecificOutput: {hookEventName: "PreCompact", additionalContext: "When compacting, preserve: (1) current task/focus and progress, (2) key decisions made this session, (3) files modified and their purposes, (4) any blockers or open issues. These are critical for mimo session continuity."}}'
 HOOK_EOF
 
 cat > "$HOOKS_DIR/session-start.sh" << 'HOOK_EOF'
@@ -330,6 +364,14 @@ if [ ! -f "$STATE_FILE" ]; then
     jq -n --arg sid "$SESSION_ID" \
         '{session_id: $sid, percentage: 0, threshold: "clean", checkpoint_done: false, fullsave_done: false}' \
         > "${STATE_FILE}.$$.tmp" && mv "${STATE_FILE}.$$.tmp" "$STATE_FILE"
+fi
+
+# Export env vars for other hooks via CLAUDE_ENV_FILE
+if [ -n "${CLAUDE_ENV_FILE:-}" ]; then
+    echo "export MIMO_SESSION_ID=\"$SESSION_ID\"" >> "$CLAUDE_ENV_FILE"
+    echo "export MIMO_STATE_FILE=\"$STATE_FILE\"" >> "$CLAUDE_ENV_FILE"
+    echo "export MIMO_CHANGES_LOG=\"$STATE_DIR/${SESSION_ID}-changes.log\"" >> "$CLAUDE_ENV_FILE"
+    echo "export MIMO_CWD=\"$CWD\"" >> "$CLAUDE_ENV_FILE"
 fi
 
 # Clean up orphan state files from crashed sessions (7-day threshold)
@@ -549,9 +591,20 @@ cat > "$HOOKS_DIR/session-start-compact.sh" << 'HOOK_EOF'
 #!/usr/bin/env bash
 # mimo v__VERSION__ — SessionStart hook (post-compact)
 # Lightweight context injection after compaction. Does NOT reset state flags.
+# Also writes post-compact flag for UserPromptSubmit hook to consume.
 set -euo pipefail
 
-CWD=$(cat | jq -r '.cwd // "."')
+STATE_DIR="$HOME/.claude/memory-state"
+
+# Read stdin JSON
+INPUT=$(cat)
+CWD=$(echo "$INPUT" | jq -r '.cwd // "."')
+SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // ""' | tr -cd 'a-zA-Z0-9-')
+
+# Write post-compact flag for UserPromptSubmit hook
+if [ -n "$SESSION_ID" ]; then
+    touch "$STATE_DIR/${SESSION_ID}-postcompact.flag"
+fi
 
 MSG="[MIMO] Continuing after compaction. Read CLAUDE.md 'Memory' sections for prior context."
 
@@ -586,10 +639,147 @@ if [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ]; then
     cp "$TRANSCRIPT" "$BACKUP_DIR/${TIMESTAMP}-end.jsonl"
 fi
 
-# Clean up only THIS session's state file (never use wildcards)
+# Clean up this session's state file, changes log, and flag file
 if [ -n "$SESSION_ID" ] && [ "$SESSION_ID" != "none" ]; then
     rm -f "$STATE_DIR/${SESSION_ID}.json"
+    rm -f "$STATE_DIR/${SESSION_ID}-changes.log"
+    rm -f "$STATE_DIR/${SESSION_ID}-postcompact.flag"
 fi
+HOOK_EOF
+
+cat > "$HOOKS_DIR/subagent-context.sh" << 'HOOK_EOF'
+#!/usr/bin/env bash
+# mimo v__VERSION__ — SubagentStart hook: inject memory context into subagents
+# Provides subagents with session state and current focus from CLAUDE.md
+set -euo pipefail
+
+# Read stdin JSON
+INPUT=$(cat)
+CWD=$(echo "$INPUT" | jq -r '.cwd // "."')
+
+# Get state file path from env or extract from input
+STATE_FILE="${MIMO_STATE_FILE:-}"
+if [ -z "$STATE_FILE" ]; then
+    SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // ""' | tr -cd 'a-zA-Z0-9-')
+    [ -z "$SESSION_ID" ] && exit 0
+    STATE_FILE="$HOME/.claude/memory-state/${SESSION_ID}.json"
+fi
+
+# Extract "Memory — Current State" section from CLAUDE.md (max 10 lines)
+MEMORY_STATE=""
+if [ -f "$CWD/CLAUDE.md" ]; then
+    MEMORY_STATE=$(sed -n '/^## Memory — Current State/,/^## /{/^## Memory — Current State/d;/^## /d;p;}' "$CWD/CLAUDE.md" | head -10)
+fi
+
+# Read context % from state file
+CTX_PCT=""
+if [ -f "$STATE_FILE" ]; then
+    CTX_PCT=$(jq -r '.percentage // ""' "$STATE_FILE" 2>/dev/null || echo "")
+fi
+
+# If no useful info, exit silently
+if [ -z "$MEMORY_STATE" ] && [ -z "$CTX_PCT" ]; then
+    exit 0
+fi
+
+# Build context message
+MSG="[MIMO — Subagent Context]"
+if [ -n "$CTX_PCT" ]; then
+    MSG="${MSG}\nParent session context usage: ${CTX_PCT}%"
+fi
+if [ -n "$MEMORY_STATE" ]; then
+    MSG="${MSG}\nMemory — Current State:\n${MEMORY_STATE}"
+fi
+
+jq -n --arg ctx "$(echo -e "$MSG")" \
+    '{hookSpecificOutput: {hookEventName: "SubagentStart", additionalContext: $ctx}}'
+HOOK_EOF
+
+cat > "$HOOKS_DIR/user-prompt-context.sh" << 'HOOK_EOF'
+#!/usr/bin/env bash
+# mimo v__VERSION__ — UserPromptSubmit hook: post-compact context injection
+# On the first user prompt after compaction, inject memory state as additionalContext
+# One-shot via flag file — zero overhead on normal prompts
+set -euo pipefail
+
+# Get session_id from env or extract from stdin
+INPUT=$(cat)
+SESSION_ID="${MIMO_SESSION_ID:-}"
+if [ -z "$SESSION_ID" ]; then
+    SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // ""' | tr -cd 'a-zA-Z0-9-')
+fi
+[ -z "$SESSION_ID" ] && exit 0
+
+# Check for post-compact flag — if not present, exit immediately (zero overhead)
+FLAG_FILE="$HOME/.claude/memory-state/${SESSION_ID}-postcompact.flag"
+if [ ! -f "$FLAG_FILE" ]; then
+    exit 0
+fi
+
+# Flag exists — this is the first prompt after compaction
+CWD="${MIMO_CWD:-}"
+if [ -z "$CWD" ]; then
+    CWD=$(echo "$INPUT" | jq -r '.cwd // "."')
+fi
+
+# Extract memory sections from CLAUDE.md
+CURRENT_STATE=""
+KEY_DECISIONS=""
+if [ -f "$CWD/CLAUDE.md" ]; then
+    CURRENT_STATE=$(sed -n '/^## Memory — Current State/,/^## /{/^## Memory — Current State/d;/^## /d;p;}' "$CWD/CLAUDE.md" | head -15)
+    KEY_DECISIONS=$(sed -n '/^## Memory — Key Decisions/,/^## \|^$/{ /^## Memory — Key Decisions/d; /^## /d; p; }' "$CWD/CLAUDE.md" | head -15)
+fi
+
+# Get CLAUDE-FULL.md line count
+FULL_LINES=""
+if [ -f "$CWD/CLAUDE-FULL.md" ]; then
+    FULL_LINES=$(wc -l < "$CWD/CLAUDE-FULL.md" | tr -d ' ')
+fi
+
+# Build context message
+MSG="[MIMO — Post-Compact Context Recovery]"
+MSG="${MSG}\nYou just went through compaction. Here's your session state:"
+if [ -n "$CURRENT_STATE" ]; then
+    MSG="${MSG}\n\nMemory — Current State:\n${CURRENT_STATE}"
+fi
+if [ -n "$KEY_DECISIONS" ]; then
+    MSG="${MSG}\n\nMemory — Key Decisions:\n${KEY_DECISIONS}"
+fi
+if [ -n "$FULL_LINES" ]; then
+    MSG="${MSG}\n\nCLAUDE-FULL.md available (${FULL_LINES} lines) — read specific line ranges as needed."
+fi
+
+# Delete flag file (one-shot)
+rm -f "$FLAG_FILE"
+
+jq -n --arg ctx "$(echo -e "$MSG")" \
+    '{hookSpecificOutput: {hookEventName: "UserPromptSubmit", additionalContext: $ctx}}'
+HOOK_EOF
+
+cat > "$HOOKS_DIR/track-changes.sh" << 'HOOK_EOF'
+#!/usr/bin/env bash
+# mimo v__VERSION__ — PostToolUse hook: track file changes
+# After every successful Write or Edit, append file path to per-session changes log
+# Runs async — never blocks Claude
+set -euo pipefail
+
+# Read stdin JSON
+INPUT=$(cat)
+
+# Get changes log path from env or derive from session_id
+CHANGES_LOG="${MIMO_CHANGES_LOG:-}"
+if [ -z "$CHANGES_LOG" ]; then
+    SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // ""' | tr -cd 'a-zA-Z0-9-')
+    [ -z "$SESSION_ID" ] && exit 0
+    CHANGES_LOG="$HOME/.claude/memory-state/${SESSION_ID}-changes.log"
+fi
+
+# Extract file_path from tool_input
+FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // .tool_input.path // ""')
+[ -z "$FILE_PATH" ] && exit 0
+
+# Append to changes log (one path per line, deduped at read time)
+echo "$FILE_PATH" >> "$CHANGES_LOG"
 HOOK_EOF
 
 # Stamp version into all hooks
@@ -598,7 +788,7 @@ sed -i'' -e "s/__VERSION__/${MIMO_VERSION}/g" "$HOOKS_DIR"/*.sh
 # Make all hooks executable
 chmod +x "$HOOKS_DIR"/*.sh
 
-info "Installed 6 hooks to $HOOKS_DIR"
+info "Installed 9 hooks to $HOOKS_DIR"
 
 # ─── Step 3: Install skills (slash commands) ────────────────────────────────
 step 3 "Installing skills (slash commands)"
@@ -689,7 +879,7 @@ MIMO_HOOKS=$(cat <<'MJSON'
   "PreCompact": [
     {
       "hooks": [
-        {"type": "command", "command": "bash ~/.claude/hooks/precompact-save.sh", "async": true, "timeout": 30}
+        {"type": "command", "command": "bash ~/.claude/hooks/precompact-save.sh", "timeout": 30}
       ]
     }
   ],
@@ -697,6 +887,28 @@ MIMO_HOOKS=$(cat <<'MJSON'
     {
       "hooks": [
         {"type": "command", "command": "bash ~/.claude/hooks/session-end-backup.sh", "async": true, "timeout": 30}
+      ]
+    }
+  ],
+  "SubagentStart": [
+    {
+      "hooks": [
+        {"type": "command", "command": "bash ~/.claude/hooks/subagent-context.sh", "timeout": 5}
+      ]
+    }
+  ],
+  "UserPromptSubmit": [
+    {
+      "hooks": [
+        {"type": "command", "command": "bash ~/.claude/hooks/user-prompt-context.sh", "timeout": 5}
+      ]
+    }
+  ],
+  "PostToolUse": [
+    {
+      "matcher": "Write|Edit",
+      "hooks": [
+        {"type": "command", "command": "bash ~/.claude/hooks/track-changes.sh", "async": true, "timeout": 5}
       ]
     }
   ]
@@ -735,6 +947,9 @@ else
         .hooks.Stop = ((.hooks.Stop // []) | remove_mimo) + $mimo.Stop |
         .hooks.PreCompact = ((.hooks.PreCompact // []) | remove_mimo) + $mimo.PreCompact |
         .hooks.SessionEnd = ((.hooks.SessionEnd // []) | remove_mimo) + $mimo.SessionEnd |
+        .hooks.SubagentStart = ((.hooks.SubagentStart // []) | remove_mimo) + $mimo.SubagentStart |
+        .hooks.UserPromptSubmit = ((.hooks.UserPromptSubmit // []) | remove_mimo) + $mimo.UserPromptSubmit |
+        .hooks.PostToolUse = ((.hooks.PostToolUse // []) | remove_mimo) + $mimo.PostToolUse |
 
         # Set statusLine
         .statusLine = $sl
@@ -788,13 +1003,11 @@ cmd_status() {
 
     # Hook scripts
     printf "${BOLD}Hook scripts:${NC}\n"
-    ALL_HOOKS_OK=true
-    for hook in statusline-memory.sh memory-gate.sh precompact-save.sh session-start.sh session-start-compact.sh session-end-backup.sh; do
+    for hook in statusline-memory.sh memory-gate.sh precompact-save.sh session-start.sh session-start-compact.sh session-end-backup.sh subagent-context.sh user-prompt-context.sh track-changes.sh; do
         if [ -x "$HOOKS_DIR/$hook" ]; then
             ok "$hook"
         else
             fail "$hook (missing or not executable)"
-            ALL_HOOKS_OK=false
         fi
     done
 
@@ -1148,7 +1361,7 @@ printf "${BOLD}Uninstalling mimo${NC}\n"
 echo ""
 
 # 1. Remove hook scripts
-for hook in statusline-memory.sh memory-gate.sh precompact-save.sh session-start.sh session-start-compact.sh session-end-backup.sh; do
+for hook in statusline-memory.sh memory-gate.sh precompact-save.sh session-start.sh session-start-compact.sh session-end-backup.sh subagent-context.sh user-prompt-context.sh track-changes.sh; do
     if [ -f "$HOOKS_DIR/$hook" ]; then
         rm "$HOOKS_DIR/$hook"
         info "Removed $hook"

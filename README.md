@@ -33,6 +33,7 @@ flowchart LR
 - **Subagent awareness** — subagents automatically receive session state and context % so they share the parent session's memory
 - **File change tracking** — modified files are tracked per-session and included in save instructions so nothing is missed
 - **Post-compact recovery** — memory state is automatically injected after compaction without extra tool calls
+- **Auto-update notifications** — checks for new versions once per day (background, never blocks). Run `mimo update` when notified
 - **Zero configuration** — install once, start a session, mimo auto-initializes everything. Use `/save` anytime to save manually
 
 ## Quick start
@@ -203,6 +204,7 @@ mimo installs 9 hooks into Claude Code's hook system:
 ```bash
 mimo status      # Diagnostic: hooks, skills, settings, dependencies, active sessions
 mimo init        # Re-initialize memory files in current project
+mimo update      # Check for and install the latest version
 mimo version     # Print version
 mimo uninstall   # Remove mimo (preserves your memory data)
 ```
@@ -218,6 +220,8 @@ mimo uninstall   # Remove mimo (preserves your memory data)
 | `~/.claude/memory-state/<session-id>.json` | Per-session state (context %, thresholds, flags) | Each session |
 | `~/.claude/memory-state/<session-id>-changes.log` | Per-session file change tracker | During sessions |
 | `~/.claude/memory-state/<session-id>-postcompact.flag` | One-shot post-compact context recovery flag | After compaction |
+| `~/.claude/memory-state/mimo-installed-version` | Installed version for update checks | Install |
+| `~/.claude/memory-state/mimo-update-check` | Cached remote version (24h TTL) | Session start |
 | `~/.claude/backups/*.jsonl` | Transcript backups (pre-compact + session-end) | During sessions |
 | `~/.local/bin/mimo` | CLI binary | Install |
 | `<project>/CLAUDE.md` | Compact memory index (auto-loaded) | First session in project |

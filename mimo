@@ -13,9 +13,11 @@ YELLOW='\033[0;33m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-ok()   { printf "  ${GREEN}[ok]${NC} %s\n" "$1"; }
-fail() { printf "  ${RED}[!!]${NC} %s\n" "$1"; }
-dim()  { printf "  ${YELLOW}[-]${NC}  %s\n" "$1"; }
+ok()    { printf "  ${GREEN}[ok]${NC} %s\n" "$1"; }
+fail()  { printf "  ${RED}[!!]${NC} %s\n" "$1"; }
+dim()   { printf "  ${YELLOW}[-]${NC}  %s\n" "$1"; }
+info()  { printf "${GREEN}[mimo]${NC} %s\n" "$1"; }
+error() { printf "${RED}[mimo]${NC} %s\n" "$1" >&2; }
 
 cmd_version() {
     echo "mimo v${MIMO_VERSION}"
@@ -308,6 +310,30 @@ ARCHIVE
     echo ""
 }
 
+cmd_update() {
+    echo ""
+    printf "${BOLD}mimo update${NC}\n"
+    echo ""
+
+    REMOTE_VERSION=$(curl -fsSL --max-time 5 \
+        "https://raw.githubusercontent.com/ShivanDana/mimo/main/VERSION" 2>/dev/null | tr -d '[:space:]')
+    if [ -z "$REMOTE_VERSION" ]; then
+        error "Could not fetch remote version. Check your network connection."
+        exit 1
+    fi
+
+    INSTALLED_VERSION=$(cat "$STATE_DIR/mimo-installed-version" 2>/dev/null || echo "unknown")
+
+    if [ "$REMOTE_VERSION" = "$INSTALLED_VERSION" ]; then
+        info "Already up to date (v${INSTALLED_VERSION})"
+        exit 0
+    fi
+
+    info "Updating mimo v${INSTALLED_VERSION} → v${REMOTE_VERSION}..."
+    echo ""
+    curl -fsSL "https://raw.githubusercontent.com/ShivanDana/mimo/main/install.sh" | bash
+}
+
 cmd_uninstall() {
     if [ -f "$HOME/.local/bin/mimo-uninstall" ]; then
         exec bash "$HOME/.local/bin/mimo-uninstall"
@@ -327,6 +353,7 @@ Usage: mimo <command>
 Commands:
   init        Re-initialize memory files in the current project
   status      Show diagnostic information
+  update      Check for and install the latest version
   version     Print version
   uninstall   Remove mimo from your system
   help        Show this help
@@ -348,6 +375,7 @@ HELP
 case "${1:-help}" in
     init)      cmd_init ;;
     status)    cmd_status ;;
+    update)    cmd_update ;;
     version)   cmd_version ;;
     uninstall) cmd_uninstall ;;
     help|--help|-h) cmd_help ;;

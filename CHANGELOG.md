@@ -2,6 +2,13 @@
 
 All notable changes to mimo will be documented in this file.
 
+## [1.5.0] - 2026-03-08
+
+### Added
+- **Auto-update notifications**: Session start checks for new versions once per 24 hours (background fetch, never blocks). Notifies via additionalContext when an update is available
+- **`mimo update` CLI command**: Check for and install the latest version with a single command. Re-runs install.sh from GitHub
+- **Installed version tracking**: `~/.claude/memory-state/mimo-installed-version` records the installed version for fast update checks
+
 ## [1.4.0] - 2026-03-08
 
 ### Fixed

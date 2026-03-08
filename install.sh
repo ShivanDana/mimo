@@ -377,6 +377,41 @@ fi
 # Clean up orphan state files from crashed sessions (7-day threshold)
 find "$STATE_DIR" -name "*.json" -mtime +7 -delete 2>/dev/null || true
 
+# ─── Auto-update check (at most once per 24h, never blocks) ──────────────────
+UPDATE_CHECK_FILE="$STATE_DIR/mimo-update-check"
+INSTALLED_VERSION_FILE="$STATE_DIR/mimo-installed-version"
+INSTALLED_VERSION=$(cat "$INSTALLED_VERSION_FILE" 2>/dev/null || echo "")
+UPDATE_MSG=""
+
+if [ -n "$INSTALLED_VERSION" ]; then
+    SHOULD_CHECK=false
+    if [ ! -f "$UPDATE_CHECK_FILE" ]; then
+        SHOULD_CHECK=true
+    else
+        # Check if file is older than 24h (86400 seconds)
+        LAST_CHECK=$(stat -f %m "$UPDATE_CHECK_FILE" 2>/dev/null || stat -c %Y "$UPDATE_CHECK_FILE" 2>/dev/null || echo "0")
+        NOW=$(date +%s)
+        if [ $(( NOW - LAST_CHECK )) -gt 86400 ]; then
+            SHOULD_CHECK=true
+        fi
+    fi
+
+    if [ "$SHOULD_CHECK" = "true" ]; then
+        # Background fetch — never blocks session start
+        (
+            REMOTE=$(curl -fsSL --max-time 3 \
+                "https://raw.githubusercontent.com/ShivanDana/mimo/main/VERSION" 2>/dev/null | tr -d '[:space:]')
+            [ -n "$REMOTE" ] && echo "$REMOTE" > "$UPDATE_CHECK_FILE"
+        ) &
+    fi
+
+    # Read cached remote version from PREVIOUS successful check
+    REMOTE_VERSION=$(cat "$UPDATE_CHECK_FILE" 2>/dev/null || echo "")
+    if [ -n "$REMOTE_VERSION" ] && [ "$REMOTE_VERSION" != "$INSTALLED_VERSION" ]; then
+        UPDATE_MSG="Update available: mimo v${INSTALLED_VERSION} → v${REMOTE_VERSION}. Run: mimo update"
+    fi
+fi
+
 # ─── Auto-init: create CLAUDE.md and CLAUDE-FULL.md if missing ───────────────
 WORKFLOW_MARKER="## Workflow Orchestration"
 MEMORY_MARKER="Memory — Current State"
@@ -572,6 +607,11 @@ fi
 if [ -f "$CWD/CLAUDE-FULL.md" ]; then
     LINES=$(wc -l < "$CWD/CLAUDE-FULL.md" | tr -d ' ')
     MSG="${MSG}\nDeep memory archive: CLAUDE-FULL.md (${LINES} lines). Read specific line ranges as needed."
+fi
+
+# Include update notification if available
+if [ -n "$UPDATE_MSG" ]; then
+    MSG="${MSG}\n${UPDATE_MSG}"
 fi
 
 # Check for recent backups
@@ -988,9 +1028,11 @@ YELLOW='\033[0;33m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-ok()   { printf "  ${GREEN}[ok]${NC} %s\n" "$1"; }
-fail() { printf "  ${RED}[!!]${NC} %s\n" "$1"; }
-dim()  { printf "  ${YELLOW}[-]${NC}  %s\n" "$1"; }
+ok()    { printf "  ${GREEN}[ok]${NC} %s\n" "$1"; }
+fail()  { printf "  ${RED}[!!]${NC} %s\n" "$1"; }
+dim()   { printf "  ${YELLOW}[-]${NC}  %s\n" "$1"; }
+info()  { printf "${GREEN}[mimo]${NC} %s\n" "$1"; }
+error() { printf "${RED}[mimo]${NC} %s\n" "$1" >&2; }
 
 cmd_version() {
     echo "mimo v${MIMO_VERSION}"
@@ -1283,6 +1325,30 @@ ARCHIVE
     echo ""
 }
 
+cmd_update() {
+    echo ""
+    printf "${BOLD}mimo update${NC}\n"
+    echo ""
+
+    REMOTE_VERSION=$(curl -fsSL --max-time 5 \
+        "https://raw.githubusercontent.com/ShivanDana/mimo/main/VERSION" 2>/dev/null | tr -d '[:space:]')
+    if [ -z "$REMOTE_VERSION" ]; then
+        error "Could not fetch remote version. Check your network connection."
+        exit 1
+    fi
+
+    INSTALLED_VERSION=$(cat "$STATE_DIR/mimo-installed-version" 2>/dev/null || echo "unknown")
+
+    if [ "$REMOTE_VERSION" = "$INSTALLED_VERSION" ]; then
+        info "Already up to date (v${INSTALLED_VERSION})"
+        exit 0
+    fi
+
+    info "Updating mimo v${INSTALLED_VERSION} → v${REMOTE_VERSION}..."
+    echo ""
+    curl -fsSL "https://raw.githubusercontent.com/ShivanDana/mimo/main/install.sh" | bash
+}
+
 cmd_uninstall() {
     if [ -f "$HOME/.local/bin/mimo-uninstall" ]; then
         exec bash "$HOME/.local/bin/mimo-uninstall"
@@ -1302,6 +1368,7 @@ Usage: mimo <command>
 Commands:
   init        Re-initialize memory files in the current project
   status      Show diagnostic information
+  update      Check for and install the latest version
   version     Print version
   uninstall   Remove mimo from your system
   help        Show this help
@@ -1323,6 +1390,7 @@ HELP
 case "${1:-help}" in
     init)      cmd_init ;;
     status)    cmd_status ;;
+    update)    cmd_update ;;
     version)   cmd_version ;;
     uninstall) cmd_uninstall ;;
     help|--help|-h) cmd_help ;;
@@ -1450,9 +1518,13 @@ echo ""
 echo "Commands:"
 echo "  mimo status     — check installation health"
 echo "  mimo init       — re-initialize memory files in current project"
+echo "  mimo update     — check for and install the latest version"
 echo "  mimo uninstall  — remove mimo"
 echo ""
 echo "Slash commands (inside Claude Code):"
 echo "  /save           — quick checkpoint"
 echo "  /save-full      — full memory save"
 echo ""
+
+# Record installed version for update checks
+echo "$MIMO_VERSION" > "$STATE_DIR/mimo-installed-version"
